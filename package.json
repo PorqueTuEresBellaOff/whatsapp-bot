@@ -1,0 +1,21 @@
+{
+  "name": "whatsapp-bot",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@whiskeysockets/baileys": "^7.0.0-rc.9",
+    "firebase-admin": "^13.6.0",
+    "googleapis": "^170.0.0",
+    "link-preview-js": "^3.2.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
+
