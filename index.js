@@ -11,6 +11,7 @@ import makeWASocket, {
 } from "@whiskeysockets/baileys";
 
 import qrcode from "qrcode-terminal";
+
 import pino from "pino"; // Logger
 
 import { crearEvento, eliminarEvento, crearBloqueoAgenda } from "./googleCalendar.js";
@@ -20,9 +21,6 @@ import { obtenerHorasDisponibles } from "./disponibilidad.js";
 // CONFIGURACIÓN DEL GRUPO PARA NOTIFICACIONES Y MODO ADMIN
 // ===============================
 const GROUP_ID = '120363424425387340@g.us'; // ← CAMBIAR AQUÍ: Reemplaza con el ID real de tu grupo
-
-// NOTA: Ahora CUALQUIER mensaje enviado a este grupo se considera comando ADMIN
-// No se necesita lista de números administradores
 
 // ===============================
 // FIREBASE
@@ -111,12 +109,11 @@ function programarRecordatorio(sock, numeroCompletoCliente, cita, clienteData) {
   if (fechaCita <= ahora) return;
   if (cita.recordatorioEnviado === true) return;
 
-  // ── 2 horas antes ────────────────────────────────
   const dosHorasAntes = new Date(fechaCita.getTime() - 2 * 60 * 60 * 1000);
   const faltanMenosDe2Horas = ahora >= dosHorasAntes;
 
   const delay = faltanMenosDe2Horas 
-    ? 30000  // ~30 segundos si ya está muy cerca
+    ? 30000
     : dosHorasAntes.getTime() - ahora.getTime();
 
   if (delay <= 0) return;
@@ -133,7 +130,6 @@ function programarRecordatorio(sock, numeroCompletoCliente, cita, clienteData) {
         hour12: true
       });
 
-      // 1. Mensaje al CLIENTE
       let mensajeCliente = "";
 
       if (faltanMenosDe2Horas) {
@@ -151,7 +147,6 @@ function programarRecordatorio(sock, numeroCompletoCliente, cita, clienteData) {
 
       await sock.sendMessage(numeroCompletoCliente, { text: mensajeCliente });
 
-      // 2. Mensaje al GRUPO DE ADMINS
       const mensajeGrupo = `🔔 *RECORDATORIO 2 HORAS* - Cita próxima\n\n` +
                           `👤 ${clienteData.nombre || 'Cliente'} (${clienteData.cedula})\n` +
                           `📱 ${clienteData.celular ? '57' + clienteData.celular : 'No registrado'}\n` +
@@ -163,7 +158,6 @@ function programarRecordatorio(sock, numeroCompletoCliente, cita, clienteData) {
 
       await sock.sendMessage(GROUP_ID, { text: mensajeGrupo });
 
-      // Marcar como enviado (importante para no repetir)
       const clienteRef = db.ref(`clientes/${clienteData.cedula}`);
       await clienteRef.transaction(current => {
         if (!current?.citas) return current;
@@ -324,7 +318,6 @@ async function reprogramarRecordatoriosPendientes(sock) {
   }
 }
 
-// Nueva función: Obtener TODAS las citas futuras (para admins)
 async function obtenerTodasCitasFuturas() {
   try {
     const snapshot = await db.ref('clientes').once('value');
@@ -408,10 +401,8 @@ async function startBot() {
 
     // ===============================
     // COMANDOS ADMIN (solo en el grupo)
-    // Cualquier mensaje en el grupo se considera comando admin
     // ===============================
     if (esGrupoAdmin) {
-      // #HELP o #AYUDA → muestra guía rápida de comandos para admins
       if (respuesta === "#HELP" || respuesta === "#AYUDA") {
         const textoHelp =
           "🆘 *AYUDA – COMANDOS DE ADMINISTRADOR*\n\n" +
@@ -443,7 +434,6 @@ async function startBot() {
         return;
       }
 
-
       if (respuesta === "#CITAS" || respuesta === "#CITA") {
         const citas = await obtenerTodasCitasFuturas();
 
@@ -467,8 +457,6 @@ async function startBot() {
         return;
       }
 
-      // #BLOQUEAR CARLOS 2025-02-14 todo
-      // #BLOQUEAR AMBOS 2025-03-01 09:00 18:00
       if (respuesta.startsWith("#BLOQUEAR ")) {
         const partes = respuesta.split(" ").slice(1);
         if (partes.length < 2) {
@@ -516,7 +504,6 @@ async function startBot() {
         return;
       }
 
-      // #CANCELAR 3   → cancela la cita número 3 de la lista de #citas
       if (respuesta.startsWith("#CANCELAR ")) {
         const numStr = respuesta.split(" ")[1];
         const indice = parseInt(numStr) - 1;
@@ -536,13 +523,10 @@ async function startBot() {
         const cita = citas[indice];
 
         try {
-          // 1. Eliminar evento de Google Calendar
-          // 1. Eliminar evento de Google Calendar (esto está bien como está)
           if (cita.eventId) {
-              await eliminarEvento(cita.eventId, cita.empleado);
+            await eliminarEvento(cita.eventId, cita.empleado);
           }
 
-          // 2. Quitar SOLO la cita específica (misma fecha + mismo empleado)
           const clienteRef = db.ref(`clientes/${cita.cedula}`);
           await clienteRef.transaction(current => {
               if (!current?.citas) return current;
@@ -554,12 +538,11 @@ async function startBot() {
               return current;
           });
 
-          // 3. Restaurar requiereDiagnostico si era diagnóstico
           if (cita.servicio === "Diagnóstico") {
               await clienteRef.update({ requiereDiagnostico: true });
           }
 
-          // 4. Notificar al cliente (si tiene celular)
+          // Notificación al cliente
           if (cita.celular) {
             const numeroCliente = `57${cita.celular}@s.whatsapp.net`;
             const fechaCita = new Date(cita.inicio);
@@ -575,6 +558,21 @@ async function startBot() {
                     `💖 Porque Tú Eres Bella` 
             });
           }
+
+          // Notificación al grupo - CANCELACIÓN POR ADMIN
+          const fechaCitaAdmin = new Date(cita.inicio);
+          const mensajeCancelAdmin = 
+            `❌ *CITA CANCELADA DESDE ADMINISTRACIÓN*\n\n` +
+            `👤 Cliente: ${cita.nombre} (${cita.cedula})\n` +
+            `💇‍♀️ Servicio: ${cita.servicio}\n` +
+            `👨‍💼 Estilista: ${cita.empleado}\n` +
+            `📅 Fecha: ${formatearFecha(fechaCitaAdmin)}\n` +
+            `🕐 Hora: ${fechaCitaAdmin.toLocaleTimeString("es-CO", { hour: '2-digit', minute: '2-digit' })}\n\n` +
+            `Motivo: Cancelación administrativa\n` +
+            `Espacio liberado en agenda.`;
+
+          await sock.sendMessage(GROUP_ID, { text: mensajeCancelAdmin })
+            .catch(err => console.error("Error notificando cancelación admin al grupo:", err));
 
           await sock.sendMessage(from, { 
             text: `✅ Cita #${indice+1} CANCELADA exitosamente.\n` +
@@ -603,9 +601,6 @@ async function startBot() {
       return;
     }
 
-    // ===============================
-    // COMANDOS GENERALES - MENU, AYUDA
-    // ===============================
     if (["MENU", "INICIO", "PRINCIPAL", "AYUDA", "HELP"].includes(respuesta)) {
       delete estados[from];
       delete temp[from];
@@ -707,9 +702,6 @@ async function startBot() {
       return;
     }
 
-    // ===============================
-    // SELECCIONAR CITA PARA GESTIONAR (múltiples citas)
-    // ===============================
     if (estados[from] === "SELECCIONAR_CITA_GESTIONAR") {
       const indice = parseInt(respuesta) - 1;
       if (isNaN(indice) || indice < 0 || indice >= temp[from].citasExistentes.length) {
@@ -726,9 +718,6 @@ async function startBot() {
       return;
     }
 
-    // ===============================
-    // GESTIONAR CITA (CAMBIAR O CANCELAR)
-    // ===============================
     if (estados[from] === "GESTIONAR_CITA") {
       const cita = temp[from].citaExistente;
       
@@ -768,6 +757,20 @@ async function startBot() {
             await clienteRef.update({ requiereDiagnostico: true });
           }
 
+          // Notificación al GRUPO - CANCELACIÓN POR CLIENTE
+          const fechaCita = new Date(cita.inicio);
+          const mensajeCancelacionGrupo = 
+            `❌ *CITA CANCELADA POR EL CLIENTE*\n\n` +
+            `👤 Cliente: ${cita.nombre || "Sin nombre"} (${temp[from].cedula})\n` +
+            `💇‍♀️ Servicio: ${cita.servicio}\n` +
+            `👨‍💼 Estilista: ${cita.empleado}\n` +
+            `📅 Fecha: ${formatearFecha(fechaCita)}\n` +
+            `🕐 Hora: ${fechaCita.toLocaleTimeString("es-CO", { hour: '2-digit', minute: '2-digit' })}\n\n` +
+            `Espacio liberado en agenda.`;
+
+          await sock.sendMessage(GROUP_ID, { text: mensajeCancelacionGrupo })
+            .catch(err => console.error("No se pudo notificar cancelación al grupo:", err));
+
           await sock.sendMessage(from, { 
             text: "❌ *Cita cancelada exitosamente.*\n\nSi deseas agendar una nueva, escribe '1️⃣' en el menú principal.\n\nEscribe 'MENU' para volver." 
           });
@@ -797,9 +800,6 @@ async function startBot() {
       return;
     }
 
-    // ===============================
-    // CONFIRMAR TIPO DE CAMBIO
-    // ===============================
     if (estados[from] === "CONFIRMAR_CAMBIO_TIPO") {
       if (["1"].includes(respuesta)) {
         estados[from] = "CONFIRMAR_CLIENTE";
@@ -823,9 +823,6 @@ async function startBot() {
       return;
     }
 
-    // ===============================
-    // CITA NO ENCONTRADA
-    // ===============================
     if (estados[from] === "CONSULTAR_NO_ENCONTRADA") {
       if (["SI", "SÍ", "1"].includes(respuesta)) {
         estados[from] = "MENU_SERVICIOS";
@@ -853,9 +850,6 @@ async function startBot() {
       return;
     }
 
-    // ===============================
-    // SELECCIÓN DE SERVICIO (nueva cita o cambio)
-    // ===============================
     if (estados[from] === "MENU_SERVICIOS" || estados[from] === "MENU_SERVICIOS_CAMBIO") {
       const servicioSeleccionado = serviciosLista.find(s => s.id === respuesta);
       if (!servicioSeleccionado) {
@@ -883,9 +877,6 @@ async function startBot() {
       return;
     }
 
-    // ===============================
-    // SELECCIÓN DE EMPLEADO
-    // ===============================
     if (estados[from] === "SELECCION_EMPLEADO") {
       const empleadoSeleccionado = empleadosLista.find(e => e.id === respuesta);
       if (!empleadoSeleccionado) {
@@ -904,9 +895,6 @@ async function startBot() {
       return;
     }
 
-    // ===============================
-    // INGRESAR CÉDULA
-    // ===============================
     if (estados[from] === "INGRESAR_CEDULA") {
       if (!/^\d{5,}$/.test(originalText)) {
         await sock.sendMessage(from, { 
@@ -954,9 +942,6 @@ async function startBot() {
       return;
     }
 
-    // ===============================
-    // CONFIRMAR SI ES NUEVO
-    // ===============================
     if (estados[from] === "CONFIRMAR_ES_NUEVO") {
       if (["SI", "SÍ"].includes(respuesta)) {
         if (temp[from].servicio.nombre !== "Diagnóstico") {
@@ -987,9 +972,6 @@ async function startBot() {
       return;
     }
 
-    // ===============================
-    // INGRESAR NOMBRE (nuevo)
-    // ===============================
     if (estados[from] === "INGRESAR_NOMBRE") {
       if (originalText.trim().length < 2) {
         await sock.sendMessage(from, { 
@@ -1007,9 +989,6 @@ async function startBot() {
       return;
     }
 
-    // ===============================
-    // INGRESAR NOMBRE (existente que dijo NO ser nuevo)
-    // ===============================
     if (estados[from] === "INGRESAR_NOMBRE_EXISTENTE") {
       if (originalText.trim().length < 2) {
         await sock.sendMessage(from, { 
@@ -1027,9 +1006,6 @@ async function startBot() {
       return;
     }
 
-    // ===============================
-    // INGRESAR CELULAR
-    // ===============================
     if (estados[from] === "INGRESAR_CELULAR") {
       if (!/^\d{10}$/.test(originalText)) {
         await sock.sendMessage(from, { 
@@ -1064,9 +1040,6 @@ async function startBot() {
       return;
     }
 
-    // ===============================
-    // CONFIRMAR INFORMACIÓN DEL CLIENTE
-    // ===============================
     if (estados[from] === "CONFIRMAR_CLIENTE") {
       if (["NO"].includes(respuesta)) {
         estados[from] = "MENU_SERVICIOS";
@@ -1135,9 +1108,6 @@ async function startBot() {
       return;
     }
 
-    // ===============================
-    // SELECCIONAR DÍA
-    // ===============================
     if (estados[from] === "SELECCIONAR_DIA") {
       const indice = parseInt(respuesta) - 1;
       
@@ -1163,9 +1133,6 @@ async function startBot() {
       return;
     }
 
-    // ===============================
-    // SELECCIONAR HORA → CREAR CITA
-    // ===============================
     if (estados[from] === "SELECCIONAR_HORA") {
       const indice = parseInt(respuesta) - 1;
       
@@ -1247,6 +1214,8 @@ async function startBot() {
         );
 
         const fechaCompleta = new Date(horaSeleccionada.inicioISO);
+
+        // Mensaje al cliente
         await sock.sendMessage(from, { 
           text: `🎉 *¡Cita ${temp[from].esCambio ? 'modificada' : 'confirmada'} exitosamente!* 🎉\n\n` +
                 `👤 *Cliente:* ${temp[from].nombre}\n` +
@@ -1261,28 +1230,30 @@ async function startBot() {
                 `Escribe 'MENU' para volver al menú principal.` 
         });
 
-        if (temp[from].esCambio) {
-          await sock.sendMessage(from, { 
-            text: `✏️ *Cita actualizada correctamente.* Tu nueva cita ha reemplazado la anterior.\n\n¡Gracias por tu preferencia! 💖` 
-          });
-        }
+        // Notificación al grupo - NUEVA o MODIFICADA
+        const esModificacion = temp[from].esCambio === true;
 
-        // ===============================
-        // NOTIFICAR AL GRUPO
-        // ===============================
-        const mensajeGrupo = `🔔 *Nueva cita agendada${temp[from].esCambio ? ' (modificada)' : ''}!*\n\n` +
-                             `👤 Cliente: ${temp[from].nombre} (${temp[from].cedula})\n` +
-                             `💇‍♀️ Servicio: ${temp[from].servicio.nombre}\n` +
-                             `👨‍💼 Estilista: ${temp[from].empleado.nombre}\n` +
-                             `📅 Fecha: ${formatearFecha(fechaCompleta)}\n` +
-                             `🕐 Hora: ${horaSeleccionada.label}\n\n` +
-                             `¡Preparémonos para atender con excelencia! 💖`;
+        const mensajeGrupo = 
+          `${esModificacion ? '✏️' : '🔔'} *${esModificacion ? 'CITA MODIFICADA' : 'NUEVA CITA AGENDADA'}*\n\n` +
+          `👤 Cliente: ${temp[from].nombre} (${temp[from].cedula})\n` +
+          `💇‍♀️ Servicio: ${temp[from].servicio.nombre}\n` +
+          `👨‍💼 Estilista: ${temp[from].empleado.nombre}\n` +
+          `📅 Fecha: ${formatearFecha(fechaCompleta)}\n` +
+          `🕐 Hora: ${horaSeleccionada.label}\n` +
+          (esModificacion ? `🔄 *Modificación de cita anterior*\n` : ``) +
+          `\n¡${esModificacion ? 'Actualizar preparación' : 'Preparémonos'} para atender con excelencia! 💖`;
 
         try {
           await sock.sendMessage(GROUP_ID, { text: mensajeGrupo });
-          console.log(`Notificación enviada al grupo: ${GROUP_ID}`);
+          console.log(`Notificación ${esModificacion ? 'modificación' : 'nueva cita'} enviada al grupo`);
         } catch (err) {
           console.error("Error enviando notificación al grupo:", err);
+        }
+
+        if (esModificacion) {
+          await sock.sendMessage(from, { 
+            text: `✏️ *Cita actualizada correctamente.* Tu nueva cita ha reemplazado la anterior.\n\n¡Gracias por tu preferencia! 💖` 
+          });
         }
 
         delete estados[from];
@@ -1298,9 +1269,6 @@ async function startBot() {
       return;
     }
 
-    // ===============================
-    // MENSAJE NO ENTENDIDO
-    // ===============================
     await sock.sendMessage(from, { 
       text: `❓ No entendí tu mensaje "${originalText}".\n\nPor favor:\n` +
             `• Responde según las instrucciones del mensaje anterior\n` +
