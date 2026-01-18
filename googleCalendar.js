@@ -84,7 +84,6 @@ export async function crearBloqueoAgenda(empleado, fechaStr, tipo = "todo", admi
   // ──────────────────────────────────────────────
   // Guardar como "cita" en Firebase bajo cliente -1
   // ──────────────────────────────────────────────
-  const db = admin.database();
   const bloqueoData = {
     nombre: "BLOQUEO ADMINISTRATIVO",
     cedula: "-1",
