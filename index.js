@@ -332,7 +332,7 @@ async function obtenerTodasCitasFuturas() {
 
       if (cliente.citas && Array.isArray(cliente.citas)) {
         cliente.citas.forEach(cita => {
-          if (new Date(cita.inicio) > new Date() && cita.estado === "confirmada") {
+          if (new Date(cita.inicio) > new Date() && (cita.estado === "confirmada" || cita.estado === "bloqueo")) {
             todasCitas.push({
               cedula,
               nombre: cliente.nombre || "Sin nombre",
@@ -462,7 +462,7 @@ async function startBot() {
         const partes = respuesta.split(" ").slice(1);
         if (partes.length < 2) {
           await sock.sendMessage(from, { 
-            text: "Formato:\n#bloquear CARLOS|ARTURO|AMBOS YYYY-MM-DD [todo | HH:MM HH:MM]\n\nEjemplos:\n#bloquear CARLOS 2025-03-15 todo\n#bloquear AMBOS 2025-04-02 09:00 14:00"
+            text: "Formato:\n#bloquear CARLOS|ARTURO|AMBOS YYYY-MM-DD [todo | HH:MM HH:MM] [motivo opcional...]\n\nEj: #bloquear CARLOS 2025-03-20 todo Capacitación\n#bloquear AMBOS 2025-04-02 09:00 14:00"
           });
           return;
         }
@@ -471,36 +471,44 @@ async function startBot() {
         const fechaStr = partes[1];
 
         if (!["CARLOS", "ARTURO", "AMBOS"].includes(quien)) {
-          await sock.sendMessage(from, { text: "Debe ser CARLOS, ARTURO o AMBOS" });
+          await sock.sendMessage(from, { text: "Empleado debe ser CARLOS, ARTURO o AMBOS" });
           return;
         }
 
-        try {
-          let tipo = "todo";
-          if (partes.length >= 3) {
-            if (partes[2].toLowerCase() === "todo") {
-              tipo = "todo";
-            } else if (partes.length >= 4) {
-              tipo = `${partes[2]} ${partes[3]}`;
-            } else {
-              throw new Error("Formato de horario incompleto");
-            }
-          }
+        let tipo = "todo";
+        let motivo = "";
 
-          const eventId = await crearBloqueoAgenda(quien, fechaStr, tipo);
+        if (partes.length >= 3) {
+          if (partes[2].toLowerCase() === "todo") {
+            tipo = "todo";
+            motivo = partes.slice(3).join(" ") || "Día completo bloqueado";
+          } else if (partes.length >= 4) {
+            tipo = `${partes[2]} ${partes[3]}`;
+            motivo = partes.slice(4).join(" ") || `Bloqueo horario ${tipo}`;
+          } else {
+            await sock.sendMessage(from, { text: "Falta hora final o usa 'todo'" });
+            return;
+          }
+        }
+
+        try {
+          const eventId = await crearBloqueoAgenda(quien, fechaStr, tipo, {
+            motivo,
+            creadoPor: "Admin vía WhatsApp"
+          });
 
           await sock.sendMessage(from, { 
-            text: `✅ Bloqueo creado exitosamente!\n` +
-                  `Empleado: ${quien}\n` +
-                  `Fecha: ${fechaStr}\n` +
-                  `Tipo: ${tipo === "todo" ? "Todo el día" : "Horario " + tipo}\n` +
-                  `ID evento: ${eventId}`
+            text: `✅ **Bloqueo creado y registrado**!\n\n` +
+                  `• Empleado: ${quien}\n` +
+                  `• Fecha: ${fechaStr}\n` +
+                  `• Tipo: ${tipo === "todo" ? "Todo el día" : "Horario " + tipo}\n` +
+                  `• Motivo: ${motivo || "No especificado"}\n` +
+                  `• ID evento principal: ${eventId}\n\n` +
+                  `Aparecerá en #citas como BLOQUEO ADMINISTRATIVO y puedes cancelarlo con #cancelar N`
           });
         } catch (err) {
           console.error("Error creando bloqueo:", err);
-          await sock.sendMessage(from, { 
-            text: "❌ Error al crear el bloqueo: " + err.message
-          });
+          await sock.sendMessage(from, { text: "❌ Error: " + err.message });
         }
         return;
       }
@@ -517,74 +525,100 @@ async function startBot() {
         const citas = await obtenerTodasCitasFuturas();
 
         if (indice >= citas.length) {
-          await sock.sendMessage(from, { text: `Solo hay ${citas.length} citas. Usa #citas para ver la lista.` });
+          await sock.sendMessage(from, { text: `Solo hay ${citas.length} registros. Usa #citas para ver.` });
           return;
         }
 
         const cita = citas[indice];
 
         try {
+          // Eliminar evento(s) de Google Calendar
           if (cita.eventId) {
-            await eliminarEvento(cita.eventId, cita.empleado);
+            if (cita.cedula === "-1" && cita.eventIds?.length > 0) {
+              // Bloqueo con varios eventos (AMBOS)
+              for (let i = 0; i < cita.eventIds.length; i++) {
+                const emp = (cita.empleado === "AMBOS" && cita.eventIds.length === 2) ? (i === 0 ? "Carlos" : "Arturo") : cita.empleado;
+                await eliminarEvento(cita.eventIds[i], emp);
+              }
+            } else {
+              await eliminarEvento(cita.eventId, cita.empleado);
+            }
           }
 
+          // Eliminar de Firebase
           const clienteRef = db.ref(`clientes/${cita.cedula}`);
           await clienteRef.transaction(current => {
-              if (!current?.citas) return current;
-              
-              current.citas = current.citas.filter(c => 
-                  !(c.inicio === cita.inicio && c.empleado === cita.empleado)
-              );
-              
-              return current;
+            if (!current?.citas) return current;
+            current.citas = current.citas.filter(c => 
+              !(c.inicio === cita.inicio && c.empleado === cita.empleado)
+            );
+            return current;
           });
 
-          if (cita.servicio === "Diagnóstico") {
-              await clienteRef.update({ requiereDiagnostico: true });
+          if (cita.servicio === "Diagnóstico" && cita.cedula !== "-1") {
+            await clienteRef.update({ requiereDiagnostico: true });
           }
 
-          // Notificación al cliente
-          if (cita.celular) {
-            const numeroCliente = `57${cita.celular}@s.whatsapp.net`;
-            const fechaCita = new Date(cita.inicio);
-            await sock.sendMessage(numeroCliente, { 
-              text: `❌ *Tu cita ha sido CANCELADA por el salón*\n\n` +
-                    `Cliente: ${cita.nombre}\n` +
-                    `Cédula: ${cita.cedula}\n` +
-                    `Servicio: ${cita.servicio}\n` +
-                    `Estilista: ${cita.empleado}\n` +
-                    `Fecha: ${formatearFecha(fechaCita)}\n` +
-                    `Hora: ${fechaCita.toLocaleTimeString("es-CO", { hour: '2-digit', minute: '2-digit' })}\n\n` +
-                    `Lamentamos el inconveniente. Puedes agendar una nueva cita respondiendo con 1.\n` +
-                    `💖 Porque Tú Eres Bella` 
+          // Mensaje diferente si es bloqueo
+          if (cita.cedula === "-1") {
+            await sock.sendMessage(from, { 
+              text: `🟢 **Bloqueo cancelado exitosamente**\n\n` +
+                    `Fecha: ${formatearFecha(new Date(cita.inicio))}\n` +
+                    `Empleado: ${cita.empleado}\n` +
+                    `Motivo original: ${cita.motivo || "—"}` 
+            });
+
+            await sock.sendMessage(GROUP_ID, { 
+              text: `🔓 *BLOQUEO CANCELADO*\n\n` +
+                    `Fecha: ${formatearFecha(new Date(cita.inicio))}\n` +
+                    `Empleado: ${cita.empleado}\n` +
+                    `Motivo: ${cita.motivo || "No especificado"}\n` +
+                    `Espacio liberado en agenda.` 
+            });
+          } else {
+            // Notificación al cliente
+            if (cita.celular) {
+              const numeroCliente = `57${cita.celular}@s.whatsapp.net`;
+              const fechaCita = new Date(cita.inicio);
+              await sock.sendMessage(numeroCliente, { 
+                text: `❌ *Tu cita ha sido CANCELADA por el salón*\n\n` +
+                      `Cliente: ${cita.nombre}\n` +
+                      `Cédula: ${cita.cedula}\n` +
+                      `Servicio: ${cita.servicio}\n` +
+                      `Estilista: ${cita.empleado}\n` +
+                      `Fecha: ${formatearFecha(fechaCita)}\n` +
+                      `Hora: ${fechaCita.toLocaleTimeString("es-CO", { hour: '2-digit', minute: '2-digit' })}\n\n` +
+                      `Lamentamos el inconveniente. Puedes agendar una nueva cita respondiendo con 1.\n` +
+                      `💖 Porque Tú Eres Bella` 
+              });
+            }
+
+            // Notificación al grupo - CANCELACIÓN POR ADMIN
+            const fechaCitaAdmin = new Date(cita.inicio);
+            const mensajeCancelAdmin = 
+              `❌ *CITA CANCELADA DESDE ADMINISTRACIÓN*\n\n` +
+              `👤 Cliente: ${cita.nombre} (${cita.cedula})\n` +
+              `💇‍♀️ Servicio: ${cita.servicio}\n` +
+              `👨‍💼 Estilista: ${cita.empleado}\n` +
+              `📅 Fecha: ${formatearFecha(fechaCitaAdmin)}\n` +
+              `🕐 Hora: ${fechaCitaAdmin.toLocaleTimeString("es-CO", { hour: '2-digit', minute: '2-digit' })}\n\n` +
+              `Motivo: Cancelación administrativa\n` +
+              `Espacio liberado en agenda.`;
+
+            await sock.sendMessage(GROUP_ID, { text: mensajeCancelAdmin })
+              .catch(err => console.error("Error notificando cancelación admin al grupo:", err));
+
+            await sock.sendMessage(from, { 
+              text: `✅ Cita #${indice+1} CANCELADA exitosamente.\n` +
+                    `Cliente: ${cita.nombre} (${cita.cedula})\n` +
+                    `Servicio: ${cita.servicio} con ${cita.empleado}\n` +
+                    `Se notificó al cliente.` 
             });
           }
 
-          // Notificación al grupo - CANCELACIÓN POR ADMIN
-          const fechaCitaAdmin = new Date(cita.inicio);
-          const mensajeCancelAdmin = 
-            `❌ *CITA CANCELADA DESDE ADMINISTRACIÓN*\n\n` +
-            `👤 Cliente: ${cita.nombre} (${cita.cedula})\n` +
-            `💇‍♀️ Servicio: ${cita.servicio}\n` +
-            `👨‍💼 Estilista: ${cita.empleado}\n` +
-            `📅 Fecha: ${formatearFecha(fechaCitaAdmin)}\n` +
-            `🕐 Hora: ${fechaCitaAdmin.toLocaleTimeString("es-CO", { hour: '2-digit', minute: '2-digit' })}\n\n` +
-            `Motivo: Cancelación administrativa\n` +
-            `Espacio liberado en agenda.`;
-
-          await sock.sendMessage(GROUP_ID, { text: mensajeCancelAdmin })
-            .catch(err => console.error("Error notificando cancelación admin al grupo:", err));
-
-          await sock.sendMessage(from, { 
-            text: `✅ Cita #${indice+1} CANCELADA exitosamente.\n` +
-                  `Cliente: ${cita.nombre} (${cita.cedula})\n` +
-                  `Servicio: ${cita.servicio} con ${cita.empleado}\n` +
-                  `Se notificó al cliente.` 
-          });
-
         } catch (err) {
-          console.error("Error cancelando cita desde admin:", err);
-          await sock.sendMessage(from, { text: "❌ Error al cancelar la cita. Revisa los logs." });
+          console.error("Error cancelando cita/bloqueo desde admin:", err);
+          await sock.sendMessage(from, { text: "❌ Error al cancelar. Revisa los logs." });
         }
 
         return;
