@@ -37,7 +37,7 @@ if (!admin.apps.length) {
   });
 }
 
-const db = admin.database();
+export const db = admin.database();
 
 // ===============================
 // DATOS BASE

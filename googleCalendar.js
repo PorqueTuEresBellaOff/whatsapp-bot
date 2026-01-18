@@ -1,5 +1,6 @@
 import { google } from "googleapis";
 import path from "path";
+import { db } from "./index.js";
 
 const auth = new google.auth.GoogleAuth({
   credentials: JSON.parse(process.env.CALENDAR_CREDENTIALS),
