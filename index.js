@@ -4,6 +4,7 @@
 // Firebase + Google Calendar
 // Citas como ARRAY dentro del cliente
 // ===============================
+import express from "express";
 
 import makeWASocket, {
   useMultiFileAuthState,
@@ -1304,4 +1305,18 @@ console.log("🌸 Iniciando Bot Porque Tú Eres Bella...");
 startBot().catch(err => {
   console.error("Error iniciando bot:", err);
   setTimeout(startBot, 5000);
+});
+
+// ===============================
+// SERVIDOR HTTP (para Render / UptimeRobot)
+// ===============================
+const app = express();
+
+app.get("/", (req, res) => {
+  res.status(200).send("Bot WhatsApp activo ✅");
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log("🌐 Servidor HTTP escuchando en puerto", PORT);
 });
