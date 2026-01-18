@@ -55,7 +55,8 @@ const serviciosLista = [
   { id: '3', key: 'CORTE', nombre: "Corte y peinado", duracion: 1.25 },
   { id: '4', key: 'TRATAMIENTO_INT', nombre: "Tratamiento intensivo", duracion: 2 },
   { id: '5', key: 'TRATAMIENTO_DISC', nombre: "Tratamiento disciplinante", duracion: 4 },
-  { id: '6', key: 'DIAGNOSTICO', nombre: "Diagnóstico", duracion: 0.75 }
+  { id: '6', key: 'MAQUI_PEI', nombre: "Maquillaje y peinado", duracion: 3},
+  { id: '7', key: 'DIAGNOSTICO', nombre: "Diagnóstico", duracion: 0.75 }
 ];
 
 const servicios = serviciosLista.reduce((acc, s) => {
