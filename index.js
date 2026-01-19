@@ -522,7 +522,7 @@ async function startBot() {
         inicioUTC.setUTCHours(inicioUTC.getUTCHours() - 5);   // ← AJUSTE COLOMBIA
 
         const finUTC = new Date(Date.UTC(year, month - 1, day, hFin, mFin, 0, 0));
-        finUTC.setUTCHours(finUTC.getUTCHours() - 5);         // ← AJUSTE COLOMBIA
+        finUTC.setUTCHours(finUTC.getUTCHours() + 5);         // ← AJUSTE COLOMBIA
 
         const duracionHoras = (finUTC - inicioUTC) / (1000 * 60 * 60);
 
@@ -1261,7 +1261,7 @@ async function startBot() {
       }
 
       const horaSeleccionada = temp[from].horas[indice];
-      const COLOMBIA_OFFSET_HOURS = -5;
+      const COLOMBIA_OFFSET_HOURS = 5;
 
       const inicioOriginal = new Date(horaSeleccionada.inicioISO);
       inicioOriginal.setUTCHours(inicioOriginal.getUTCHours() + COLOMBIA_OFFSET_HOURS);
