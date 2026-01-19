@@ -519,7 +519,7 @@ async function startBot() {
 
         // Creamos la fecha en UTC pero la ajustamos restando 5 horas (porque el servidor está en UTC)
         const inicioUTC = new Date(Date.UTC(year, month - 1, day, hInicio, mInicio, 0, 0));
-        inicioUTC.setUTCHours(inicioUTC.getUTCHours() - 5);   // ← AJUSTE COLOMBIA
+        inicioUTC.setUTCHours(inicioUTC.getUTCHours() + 5);   // ← AJUSTE COLOMBIA
 
         const finUTC = new Date(Date.UTC(year, month - 1, day, hFin, mFin, 0, 0));
         finUTC.setUTCHours(finUTC.getUTCHours() + 5);         // ← AJUSTE COLOMBIA
