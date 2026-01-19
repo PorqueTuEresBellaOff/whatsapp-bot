@@ -468,117 +468,141 @@ async function startBot() {
         return;
       }
 
-      if (respuesta.startsWith("#BLOQUEAR ")) {
-        const partes = respuesta.split(" ").slice(1);
-        if (partes.length < 3) {
-          await sock.sendMessage(from, { 
-            text: "Formato:\n#bloquear CARLOS|ARTURO|AMBOS YYYY-MM-DD HH:MM HH:MM [motivo opcional...]\n" +
-                  "   o\n#bloquear CARLOS|ARTURO|AMBOS YYYY-MM-DD todo [motivo opcional...]\n\n" +
-                  "Ejemplos:\n" +
-                  "#bloquear CARLOS 2025-03-20 09:00 18:00 Capacitación todo el día\n" +
-                  "#bloquear AMBOS 2025-04-02 todo Reunión de equipo\n" +
-                  "#bloquear ARTURO 2025-04-15 13:00 20:30"
-          });
-          return;
-        }
-
-        const quien = partes[0].toUpperCase();
-        const fechaStr = partes[1];
-        let horaInicio, horaFin, motivo;
-
-        // Detectar si es "todo"
-        if (partes[2].toLowerCase() === "todo") {
-          horaInicio = "07:00";
-          horaFin    = "22:00";
-          motivo = partes.slice(3).join(" ") || "Bloqueo administrativo (día completo)";
-        } else {
-          // Modo horario específico
-          if (partes.length < 4) {
-            await sock.sendMessage(from, { text: "Cuando no uses 'todo', debes indicar hora inicio y hora fin (HH:MM HH:MM)" });
-            return;
-          }
-          horaInicio = partes[2];
-          horaFin    = partes[3];
-          motivo = partes.slice(4).join(" ") || "Bloqueo administrativo";
-        }
-
-        if (!["CARLOS", "ARTURO", "AMBOS"].includes(quien)) {
-          await sock.sendMessage(from, { text: "Empleado debe ser CARLOS, ARTURO o AMBOS" });
-          return;
-        }
-
-        if (!/^\d{2}:\d{2}$/.test(horaInicio) || !/^\d{2}:\d{2}$/.test(horaFin)) {
-          await sock.sendMessage(from, { text: "Formato de hora inválido. Usa HH:MM" });
-          return;
-        }
-
-        const empleados = quien === "AMBOS" ? ["Carlos", "Arturo"] : [quien.charAt(0).toUpperCase() + quien.slice(1).toLowerCase()];
-
-        const inicioISO = `${fechaStr}T${horaInicio}:00`;
-        
-        // Calculamos duración en horas
-        const duracionHoras = calcularDuracionHoras(horaInicio, horaFin);
-        if (duracionHoras <= 0) {
-          await sock.sendMessage(from, { text: "La hora final debe ser mayor a la hora inicial." });
-          return;
-        }
-
-        const idsCreados = [];
-
-        for (const emp of empleados) {
-          try {
-            const eventId = await crearEvento({
-              nombre: "BLOQUEO ADMINISTRATIVO",
-              servicio: "Bloqueo de agenda",
-              empleado: emp,
-              inicioISO,
-              duracionHoras,
-              telefono: "—",
-              cedula: "-1",
-              descripcionExtra: `Motivo: ${motivo}\nCreado por: Admin vía WhatsApp`
-            });
-
-            idsCreados.push(eventId);
-
-            const citaData = {
-              nombre: "BLOQUEO ADMINISTRATIVO",
-              cedula: "-1",
-              servicio: "Bloqueo de agenda",
-              empleado: emp,
-              inicio: inicioISO,
-              fechaCreacion: new Date().toISOString(),
-              estado: "bloqueo",
-              eventId: eventId,
-              motivo: motivo
-            };
-
-            await db.ref('clientes/-1/citas').push(citaData);
-
-            console.log(`Bloqueo creado → ${emp} → ${eventId}`);
-          } catch (err) {
-            console.error(`Error creando bloqueo para ${emp}:`, err);
-          }
-        }
-
-        if (idsCreados.length === 0) {
-          await sock.sendMessage(from, { text: "❌ No se pudo crear ningún bloqueo. Revisa los logs." });
-          return;
-        }
-
-        const tipoBloqueo = (horaInicio === "07:00" && horaFin === "22:00") ? "día completo (7:00 – 22:00)" : `horario ${horaInicio} – ${horaFin}`;
-
+     if (respuesta.startsWith("#BLOQUEAR ")) {
+      const partes = respuesta.split(" ").slice(1);
+      if (partes.length < 3) {
         await sock.sendMessage(from, { 
-          text: `✅ **Bloqueo administrativo creado**!\n\n` +
-                `• Empleado(s): ${empleados.join(" y ")}\n` +
-                `• Fecha: ${fechaStr}\n` +
-                `• Horario: ${tipoBloqueo}\n` +
-                `• Motivo: ${motivo}\n` +
-                `• Evento(s) creado(s): ${idsCreados.join(", ")}\n\n` +
-                `Aparecerá en #citas como BLOQUEO ADMINISTRATIVO y puedes cancelarlo con #cancelar N`
+          text: "Formato:\n#bloquear CARLOS|ARTURO|AMBOS YYYY-MM-DD HH:MM HH:MM [motivo opcional...]\n" +
+                "   o\n#bloquear CARLOS|ARTURO|AMBOS YYYY-MM-DD todo [motivo opcional...]\n\n" +
+                "Ejemplos:\n" +
+                "#bloquear CARLOS 2025-03-20 09:00 18:00 Capacitación todo el día\n" +
+                "#bloquear AMBOS 2025-04-02 todo Reunión de equipo\n" +
+                "#bloquear ARTURO 2025-04-15 13:00 20:30"
         });
-
         return;
       }
+
+      const quien = partes[0].toUpperCase();
+      const fechaStr = partes[1];
+      let horaInicio, horaFin, motivo;
+
+      // Detectar si es "todo"
+      if (partes[2].toLowerCase() === "todo") {
+        horaInicio = "07:00";
+        horaFin    = "22:00";
+        motivo = partes.slice(3).join(" ") || "Bloqueo administrativo (día completo)";
+      } else {
+        // Modo horario específico
+        if (partes.length < 4) {
+          await sock.sendMessage(from, { text: "Cuando no uses 'todo', debes indicar hora inicio y hora fin (HH:MM HH:MM)" });
+          return;
+        }
+        horaInicio = partes[2];
+        horaFin    = partes[3];
+        motivo = partes.slice(4).join(" ") || "Bloqueo administrativo";
+      }
+
+      if (!["CARLOS", "ARTURO", "AMBOS"].includes(quien)) {
+        await sock.sendMessage(from, { text: "Empleado debe ser CARLOS, ARTURO o AMBOS" });
+        return;
+      }
+
+      if (!/^\d{2}:\d{2}$/.test(horaInicio) || !/^\d{2}:\d{2}$/.test(horaFin)) {
+        await sock.sendMessage(from, { text: "Formato de hora inválido. Usa HH:MM" });
+        return;
+      }
+
+      // ───────────────────────────────────────────────────────────────
+      // Construcción de fecha/hora en zona local Bogotá → toISOString()
+      // ───────────────────────────────────────────────────────────────
+      const [year, month, day] = fechaStr.split('-').map(Number);
+
+      // Inicio en hora local deseada (Bogotá)
+      const inicioLocal = new Date(year, month - 1, day, 
+        parseInt(horaInicio.split(':')[0]), 
+        parseInt(horaInicio.split(':')[1]), 
+        0, 0
+      );
+
+      // Fin en hora local deseada
+      const finLocal = new Date(year, month - 1, day, 
+        parseInt(horaFin.split(':')[0]), 
+        parseInt(horaFin.split(':')[1]), 
+        0, 0
+      );
+
+      // Validar que fin > inicio
+      const duracionHoras = (finLocal - inicioLocal) / (1000 * 60 * 60);
+      if (duracionHoras <= 0) {
+        await sock.sendMessage(from, { text: "La hora final debe ser mayor a la hora inicial." });
+        return;
+      }
+
+      // Convertir a ISO string (UTC) como lo usas en las citas normales
+      const inicioISO = inicioLocal.toISOString();
+
+      console.log(`[BLOQUEO] fechaStr=${fechaStr} | horaInicio=${horaInicio} → inicioISO=${inicioISO} | duración=${duracionHoras}h`);
+
+      const empleados = quien === "AMBOS" ? ["Carlos", "Arturo"] : [quien.charAt(0).toUpperCase() + quien.slice(1).toLowerCase()];
+
+      const idsCreados = [];
+
+      for (const emp of empleados) {
+        try {
+          const eventId = await crearEvento({
+            nombre: "BLOQUEO ADMINISTRATIVO",
+            servicio: "Bloqueo de agenda",
+            empleado: emp,
+            inicioISO: inicioISO,
+            duracionHoras: duracionHoras,
+            telefono: "—",
+            cedula: "0",
+            descripcionExtra: `Motivo: ${motivo}\nCreado por: Admin vía WhatsApp`
+          });
+
+          idsCreados.push(eventId);
+
+          const citaData = {
+            nombre: "BLOQUEO ADMINISTRATIVO",
+            cedula: "0",
+            servicio: "Bloqueo de agenda",
+            empleado: emp,
+            inicio: inicioISO,
+            fechaCreacion: new Date().toISOString(),
+            estado: "bloqueo",
+            eventId: eventId,
+            motivo: motivo
+          };
+
+          await db.ref('clientes/0/citas').push(citaData);
+
+          console.log(`Bloqueo creado → ${emp} → ${eventId}`);
+        } catch (err) {
+          console.error(`Error creando bloqueo para ${emp}:`, err);
+        }
+      }
+
+      if (idsCreados.length === 0) {
+        await sock.sendMessage(from, { text: "❌ No se pudo crear ningún bloqueo. Revisa los logs." });
+        return;
+      }
+
+      const tipoBloqueo = (horaInicio === "07:00" && horaFin === "22:00") 
+        ? "día completo (7:00 – 22:00)" 
+        : `horario ${horaInicio} – ${horaFin}`;
+
+      await sock.sendMessage(from, { 
+        text: `✅ **Bloqueo administrativo creado**!\n\n` +
+              `• Empleado(s): ${empleados.join(" y ")}\n` +
+              `• Fecha: ${fechaStr}\n` +
+              `• Horario: ${tipoBloqueo}\n` +
+              `• Motivo: ${motivo}\n` +
+              `• Evento(s) creado(s): ${idsCreados.join(", ")}\n\n` +
+              `Aparecerá en #citas como BLOQUEO ADMINISTRATIVO y puedes cancelarlo con #cancelar N`
+      });
+
+      return;
+    }
 
       if (respuesta.startsWith("#CANCELAR ")) {
         const numStr = respuesta.split(" ")[1];
