@@ -472,16 +472,35 @@ async function startBot() {
         const partes = respuesta.split(" ").slice(1);
         if (partes.length < 3) {
           await sock.sendMessage(from, { 
-            text: "Formato:\n#bloquear CARLOS|ARTURO|AMBOS YYYY-MM-DD HH:MM HH:MM [motivo opcional...]\n\nEjemplos:\n#bloquear CARLOS 2025-03-20 09:00 18:00 Capacitación todo el día\n#bloquear AMBOS 2025-04-02 14:00 17:00 Reunión proveedores"
+            text: "Formato:\n#bloquear CARLOS|ARTURO|AMBOS YYYY-MM-DD HH:MM HH:MM [motivo opcional...]\n" +
+                  "   o\n#bloquear CARLOS|ARTURO|AMBOS YYYY-MM-DD todo [motivo opcional...]\n\n" +
+                  "Ejemplos:\n" +
+                  "#bloquear CARLOS 2025-03-20 09:00 18:00 Capacitación todo el día\n" +
+                  "#bloquear AMBOS 2025-04-02 todo Reunión de equipo\n" +
+                  "#bloquear ARTURO 2025-04-15 13:00 20:30"
           });
           return;
         }
 
         const quien = partes[0].toUpperCase();
         const fechaStr = partes[1];
-        const horaInicio = partes[2];
-        const horaFin = partes[3];
-        const motivo = partes.slice(4).join(" ") || "Bloqueo administrativo";
+        let horaInicio, horaFin, motivo;
+
+        // Detectar si es "todo"
+        if (partes[2].toLowerCase() === "todo") {
+          horaInicio = "07:00";
+          horaFin    = "22:00";
+          motivo = partes.slice(3).join(" ") || "Bloqueo administrativo (día completo)";
+        } else {
+          // Modo horario específico
+          if (partes.length < 4) {
+            await sock.sendMessage(from, { text: "Cuando no uses 'todo', debes indicar hora inicio y hora fin (HH:MM HH:MM)" });
+            return;
+          }
+          horaInicio = partes[2];
+          horaFin    = partes[3];
+          motivo = partes.slice(4).join(" ") || "Bloqueo administrativo";
+        }
 
         if (!["CARLOS", "ARTURO", "AMBOS"].includes(quien)) {
           await sock.sendMessage(from, { text: "Empleado debe ser CARLOS, ARTURO o AMBOS" });
@@ -489,21 +508,22 @@ async function startBot() {
         }
 
         if (!/^\d{2}:\d{2}$/.test(horaInicio) || !/^\d{2}:\d{2}$/.test(horaFin)) {
-          await sock.sendMessage(from, { text: "Formato de hora inválido. Usa HH:MM HH:MM" });
+          await sock.sendMessage(from, { text: "Formato de hora inválido. Usa HH:MM" });
           return;
         }
 
         const empleados = quien === "AMBOS" ? ["Carlos", "Arturo"] : [quien.charAt(0).toUpperCase() + quien.slice(1).toLowerCase()];
 
         const inicioISO = `${fechaStr}T${horaInicio}:00`;
-        const duracionStr = calcularDuracionHoras(horaInicio, horaFin);
-        if (!duracionStr) {
+        
+        // Calculamos duración en horas
+        const duracionHoras = calcularDuracionHoras(horaInicio, horaFin);
+        if (duracionHoras <= 0) {
           await sock.sendMessage(from, { text: "La hora final debe ser mayor a la hora inicial." });
           return;
         }
 
         const idsCreados = [];
-        const bloqueosInfo = [];
 
         for (const emp of empleados) {
           try {
@@ -512,7 +532,7 @@ async function startBot() {
               servicio: "Bloqueo de agenda",
               empleado: emp,
               inicioISO,
-              duracionHoras: duracionStr,
+              duracionHoras,
               telefono: "—",
               cedula: "-1",
               descripcionExtra: `Motivo: ${motivo}\nCreado por: Admin vía WhatsApp`
@@ -534,7 +554,7 @@ async function startBot() {
 
             await db.ref('clientes/-1/citas').push(citaData);
 
-            bloqueosInfo.push({ empleado: emp, eventId });
+            console.log(`Bloqueo creado → ${emp} → ${eventId}`);
           } catch (err) {
             console.error(`Error creando bloqueo para ${emp}:`, err);
           }
@@ -545,11 +565,13 @@ async function startBot() {
           return;
         }
 
+        const tipoBloqueo = (horaInicio === "07:00" && horaFin === "22:00") ? "día completo (7:00 – 22:00)" : `horario ${horaInicio} – ${horaFin}`;
+
         await sock.sendMessage(from, { 
           text: `✅ **Bloqueo administrativo creado**!\n\n` +
                 `• Empleado(s): ${empleados.join(" y ")}\n` +
                 `• Fecha: ${fechaStr}\n` +
-                `• Horario: ${horaInicio} – ${horaFin}\n` +
+                `• Horario: ${tipoBloqueo}\n` +
                 `• Motivo: ${motivo}\n` +
                 `• Evento(s) creado(s): ${idsCreados.join(", ")}\n\n` +
                 `Aparecerá en #citas como BLOQUEO ADMINISTRATIVO y puedes cancelarlo con #cancelar N`
