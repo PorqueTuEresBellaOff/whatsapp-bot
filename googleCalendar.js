@@ -1,5 +1,4 @@
 import { google } from "googleapis";
-import path from "path";
 import { db } from "./index.js";
 
 const auth = new google.auth.GoogleAuth({
@@ -14,8 +13,8 @@ const calendar = google.calendar({
 
 // ¡Calendarios separados por empleado!
 const CALENDARS_BY_EMPLEADO = {
-  "Carlos":  "57a7566fe4630dcdec998aba92b2e604bd75ae4a90cfbaad79cf3bb82d2fcacf@group.calendar.google.com", // ← TU ID REAL
-  "Arturo":  "25bdad0375a183e752e99b772c8a9fd9d85f326818bfcd15483fe92b0a95cfd3@group.calendar.google.com", // ← TU ID REAL
+  "Carlos": "57a7566fe4630dcdec998aba92b2e604bd75ae4a90cfbaad79cf3bb82d2fcacf@group.calendar.google.com",
+  "Arturo": "25bdad0375a183e752e99b772c8a9fd9d85f326818bfcd15483fe92b0a95cfd3@group.calendar.google.com",
 };
 
 function getCalendarId(empleadoNombre) {
@@ -26,87 +25,6 @@ function getCalendarId(empleadoNombre) {
   return calendarId;
 }
 
-/**
- * @param {string} empleado - "CARLOS", "ARTURO" o "AMBOS"
- * @param {string} fechaStr - YYYY-MM-DD
- * @param {string} tipo - "todo" o "09:00 14:00"
- * @param {Object} adminInfo - { motivo?: string, creadoPor?: string }
- * @returns {Promise<string[]>} Array de IDs de eventos creados (uno por empleado)
- */
-export async function crearBloqueoAgenda(empleado, fechaStr, tipo = "todo", adminInfo = {}) {
-  const fecha = new Date(fechaStr);
-  if (isNaN(fecha.getTime())) {
-    throw new Error("Fecha inválida. Usa formato YYYY-MM-DD");
-  }
-
-  const empleados = [];
-  if (empleado.toUpperCase() === "AMBOS") {
-    empleados.push("Carlos", "Arturo");
-  } else {
-    empleados.push(empleado.charAt(0).toUpperCase() + empleado.slice(1).toLowerCase());
-  }
-
-  const eventoBase = {
-    summary: "🔒 BLOQUEO - NO AGENDAR",
-    description: `Bloqueo administrativo\nMotivo: ${adminInfo.motivo || (tipo === "todo" ? "Todo el día" : "Horario específico")}\nCreado por: ${adminInfo.creadoPor || "Admin"}`,
-    colorId: "4", // rojo suave
-    reminders: { useDefault: false },
-  };
-
-  let startDateTime, endDateTime;
-
-  if (tipo.toLowerCase() === "todo") {
-    startDateTime = { dateTime: `${fechaStr}T08:00:00`, timeZone: "America/Bogota" };
-    endDateTime   = { dateTime: `${fechaStr}T18:00:00`, timeZone: "America/Bogota" };
-  } else {
-    const [ini, fin] = tipo.split(" ");
-    if (!ini || !fin) throw new Error("Formato horario inválido");
-    startDateTime = { dateTime: `${fechaStr}T${ini}:00`, timeZone: "America/Bogota" };
-    endDateTime   = { dateTime: `${fechaStr}T${fin}:00`, timeZone: "America/Bogota" };
-  }
-
-  const idsCreados = [];
-
-  for (const emp of empleados) {
-    const calendarId = getCalendarId(emp);
-    const evento = { ...eventoBase, start: startDateTime, end: endDateTime };
-
-    const res = await calendar.events.insert({
-      calendarId,
-      resource: evento,
-      sendUpdates: "none"
-    });
-
-    idsCreados.push(res.data.id);
-    console.log(`Bloqueo GC creado → ${emp} → ${res.data.id}`);
-
-    // ──────────────────────────────────────────────
-    // Guardar como "cita" separada en Firebase bajo cliente -1 por cada empleado
-    // ──────────────────────────────────────────────
-    const bloqueoData = {
-      nombre: "BLOQUEO ADMINISTRATIVO",
-      cedula: "-1",
-      servicio: "Bloqueo de agenda",
-      empleado: emp,  // Ahora individual por empleado
-      inicio: startDateTime.dateTime,
-      fechaCreacion: new Date().toISOString(),
-      estado: "bloqueo",
-      eventId: res.data.id,  // Solo este ID
-      motivo: adminInfo.motivo || (tipo === "todo" ? "Día completo bloqueado" : `Rango ${tipo}`),
-      tipoBloqueo: tipo,
-    };
-
-    await db.ref('clientes/-1/citas').push(bloqueoData);
-    console.log(`Bloqueo guardado en Firebase bajo clientes/-1 para ${emp}`);
-  }
-
-  return idsCreados;  // Retorna array de todos los IDs creados
-}
-
-// ──────────────────────────────────────────────
-// Funciones existentes (sin cambios)
-// ──────────────────────────────────────────────
-
 export async function crearEvento({
   nombre,
   servicio,
@@ -115,11 +33,11 @@ export async function crearEvento({
   duracionHoras,
   telefono,
   cedula,
-  esCambio = false
+  esCambio = false,
+  descripcionExtra = ""   // ← nuevo parámetro opcional para motivo de bloqueo
 }) {
   console.log("DEBUG crearEvento → inicioISO:", inicioISO);
   console.log("DEBUG crearEvento → duracionHoras:", duracionHoras);
-  console.log("DEBUG crearEvento → esCambio:", esCambio);
   console.log("DEBUG crearEvento → empleado:", empleado);
 
   const calendarId = getCalendarId(empleado);
@@ -129,17 +47,18 @@ export async function crearEvento({
     throw new Error("Fecha inicio inválida: " + inicioISO);
   }
 
-  // Margen de 15 minutos
+  // Margen de 15 minutos (como antes)
   const fin = new Date(inicio.getTime() + (duracionHoras + 0.25) * 60 * 60 * 1000);
 
   const evento = {
-    summary: `Cita - ${servicio}`,
-    description: `Cliente: ${nombre} (${cedula})\nTeléfono: ${telefono}\nEmpleado: ${empleado}\nServicio: ${servicio}`,
+    summary: servicio === "Bloqueo de agenda" ? "🔒 BLOQUEO - NO AGENDAR" : `Cita - ${servicio}`,
+    description: `Cliente: ${nombre} (${cedula})\nTeléfono: ${telefono || "—"} \n${descripcionExtra ? `\n${descripcionExtra}\n` : ""}`,
     start: { dateTime: inicio.toISOString(), timeZone: "America/Bogota" },
     end:   { dateTime: fin.toISOString(),    timeZone: "America/Bogota" },
+    colorId: servicio === "Bloqueo de agenda" ? "4" : undefined, // rojo suave para bloqueos
     reminders: {
       useDefault: false,
-      overrides: [{ method: "popup", minutes: 120 }],
+      overrides: servicio === "Bloqueo de agenda" ? [] : [{ method: "popup", minutes: 120 }],
     }
   };
 
@@ -147,7 +66,7 @@ export async function crearEvento({
     const res = await calendar.events.insert({
       calendarId,
       resource: evento,
-      sendUpdates: "all"
+      sendUpdates: servicio === "Bloqueo de agenda" ? "none" : "all"
     });
 
     console.log("Evento creado → ID:", res.data.id);

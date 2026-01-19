@@ -470,84 +470,91 @@ async function startBot() {
 
       if (respuesta.startsWith("#BLOQUEAR ")) {
         const partes = respuesta.split(" ").slice(1);
-        if (partes.length < 2) {
+        if (partes.length < 3) {
           await sock.sendMessage(from, { 
-            text: "Formato:\n#bloquear CARLOS|ARTURO|AMBOS YYYY-MM-DD [todo | HH:MM HH:MM] [motivo opcional...]\n\nEj: #bloquear CARLOS 2025-03-20 todo Capacitación\n#bloquear AMBOS 2025-04-02 09:00 14:00"
+            text: "Formato:\n#bloquear CARLOS|ARTURO|AMBOS YYYY-MM-DD HH:MM HH:MM [motivo opcional...]\n\nEjemplos:\n#bloquear CARLOS 2025-03-20 09:00 18:00 Capacitación todo el día\n#bloquear AMBOS 2025-04-02 14:00 17:00 Reunión proveedores"
           });
           return;
         }
 
         const quien = partes[0].toUpperCase();
         const fechaStr = partes[1];
+        const horaInicio = partes[2];
+        const horaFin = partes[3];
+        const motivo = partes.slice(4).join(" ") || "Bloqueo administrativo";
 
         if (!["CARLOS", "ARTURO", "AMBOS"].includes(quien)) {
           await sock.sendMessage(from, { text: "Empleado debe ser CARLOS, ARTURO o AMBOS" });
           return;
         }
 
-        let tipo = "todo";
-        let motivo = "";
+        if (!/^\d{2}:\d{2}$/.test(horaInicio) || !/^\d{2}:\d{2}$/.test(horaFin)) {
+          await sock.sendMessage(from, { text: "Formato de hora inválido. Usa HH:MM HH:MM" });
+          return;
+        }
 
-        if (partes.length >= 3) {
-          if (partes[2].toLowerCase() === "todo") {
-            tipo = "todo";
-            motivo = partes.slice(3).join(" ") || "Día completo bloqueado";
-          } else if (partes.length >= 4) {
-            tipo = `${partes[2]} ${partes[3]}`;
-            motivo = partes.slice(4).join(" ") || `Bloqueo horario ${tipo}`;
-          } else {
-            await sock.sendMessage(from, { text: "Falta hora final o usa 'todo'" });
-            return;
+        const empleados = quien === "AMBOS" ? ["Carlos", "Arturo"] : [quien.charAt(0).toUpperCase() + quien.slice(1).toLowerCase()];
+
+        const inicioISO = `${fechaStr}T${horaInicio}:00`;
+        const duracionStr = calcularDuracionHoras(horaInicio, horaFin);
+        if (!duracionStr) {
+          await sock.sendMessage(from, { text: "La hora final debe ser mayor a la hora inicial." });
+          return;
+        }
+
+        const idsCreados = [];
+        const bloqueosInfo = [];
+
+        for (const emp of empleados) {
+          try {
+            const eventId = await crearEvento({
+              nombre: "BLOQUEO ADMINISTRATIVO",
+              servicio: "Bloqueo de agenda",
+              empleado: emp,
+              inicioISO,
+              duracionHoras: duracionStr,
+              telefono: "—",
+              cedula: "-1",
+              descripcionExtra: `Motivo: ${motivo}\nCreado por: Admin vía WhatsApp`
+            });
+
+            idsCreados.push(eventId);
+
+            const citaData = {
+              nombre: "BLOQUEO ADMINISTRATIVO",
+              cedula: "-1",
+              servicio: "Bloqueo de agenda",
+              empleado: emp,
+              inicio: inicioISO,
+              fechaCreacion: new Date().toISOString(),
+              estado: "bloqueo",
+              eventId: eventId,
+              motivo: motivo
+            };
+
+            await db.ref('clientes/-1/citas').push(citaData);
+
+            bloqueosInfo.push({ empleado: emp, eventId });
+          } catch (err) {
+            console.error(`Error creando bloqueo para ${emp}:`, err);
           }
         }
 
-        try {
-          // Asumiendo que crearBloqueoAgenda devuelve un array de objetos con {eventId, inicio, empleado, duracion, motivo} 
-          // (debes ajustar googleCalendar.js para que retorne esto en lugar de solo eventIds.
-          // Por ejemplo, en googleCalendar.js, en lugar de return eventIds, return los objetos completos de bloqueos creados.
-          // Esto soluciona posibles duplicados si hay un bug en la función; asegúrate de que no haya loops innecesarios allí.
-          // Si el duplicado es intencional para "AMBOS" (uno por empleado), entonces es normal, pero si se duplica accidentalmente, revisa loops en crearBloqueoAgenda.
-          const bloqueos = await crearBloqueoAgenda(quien, fechaStr, tipo, {
-            motivo,
-            creadoPor: "Admin vía WhatsApp"
-          });
-
-          // Agregar a Firebase bajo clientes/-1 (esto soluciona que no aparezcan en #citas)
-          const bloqueoRef = db.ref('clientes/-1');
-          await bloqueoRef.transaction(current => {
-            if (!current) {
-              current = {
-                nombre: "Bloqueos Administrativos",
-                citas: []
-              };
-            }
-            for (const b of bloqueos) {
-              current.citas.push({
-                servicio: "BLOQUEO ADMINISTRATIVO",
-                empleado: b.empleado,
-                inicio: b.inicio,  // Asumiendo que devuelve 'inicio' como ISO
-                estado: "bloqueo",
-                eventId: b.eventId,
-                motivo: b.motivo || motivo,
-                recordatorioEnviado: true  // No necesita recordatorio
-              });
-            }
-            return current;
-          });
-
-          await sock.sendMessage(from, { 
-            text: `✅ **Bloqueo creado y registrado**!\n\n` +
-                  `• Empleado: ${quien}\n` +
-                  `• Fecha: ${fechaStr}\n` +
-                  `• Tipo: ${tipo === "todo" ? "Todo el día" : "Horario " + tipo}\n` +
-                  `• Motivo: ${motivo || "No especificado"}\n` +
-                  `• IDs de eventos: ${bloqueos.map(b => b.eventId).join(", ")}\n\n` +
-                  `Aparecerá en #citas como BLOQUEO ADMINISTRATIVO (separado por empleado si AMBOS) y puedes cancelarlo con #cancelar N`
-          });
-        } catch (err) {
-          console.error("Error creando bloqueo:", err);
-          await sock.sendMessage(from, { text: "❌ Error: " + err.message });
+        if (idsCreados.length === 0) {
+          await sock.sendMessage(from, { text: "❌ No se pudo crear ningún bloqueo. Revisa los logs." });
+          return;
         }
+
+        await sock.sendMessage(from, { 
+          text: `✅ **Bloqueo administrativo creado**!\n\n` +
+                `• Empleado(s): ${empleados.join(" y ")}\n` +
+                `• Fecha: ${fechaStr}\n` +
+                `• Horario: ${horaInicio} – ${horaFin}\n` +
+                `• Motivo: ${motivo}\n` +
+                `• Evento(s) creado(s): ${idsCreados.join(", ")}\n\n` +
+                `Aparecerá en #citas como BLOQUEO ADMINISTRATIVO y puedes cancelarlo con #cancelar N`
+        });
+
         return;
       }
 
@@ -1384,3 +1391,15 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("🌐 Servidor HTTP escuchando en puerto", PORT);
 });
+
+function calcularDuracionHoras(horaInicio, horaFin) {
+  const [h1, m1] = horaInicio.split(":").map(Number);
+  const [h2, m2] = horaFin.split(":").map(Number);
+  
+  const minTotal1 = h1 * 60 + m1;
+  const minTotal2 = h2 * 60 + m2;
+  
+  if (minTotal2 <= minTotal1) return null;
+  
+  return (minTotal2 - minTotal1) / 60;
+}
