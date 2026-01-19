@@ -15,7 +15,7 @@ import qrcode from "qrcode-terminal";
 
 import pino from "pino"; // Logger
 
-import { crearEvento, eliminarEvento, crearBloqueoAgenda } from "./googleCalendar.js";
+import { crearEvento, eliminarEvento } from "./googleCalendar.js";
 import { obtenerHorasDisponibles } from "./disponibilidad.js";
 
 // ===============================
