@@ -31,7 +31,7 @@ function getCalendarId(empleadoNombre) {
  * @param {string} fechaStr - YYYY-MM-DD
  * @param {string} tipo - "todo" o "09:00 14:00"
  * @param {Object} adminInfo - { motivo?: string, creadoPor?: string }
- * @returns {Promise<string>} ID del evento principal creado
+ * @returns {Promise<string[]>} Array de IDs de eventos creados (uno por empleado)
  */
 export async function crearBloqueoAgenda(empleado, fechaStr, tipo = "todo", adminInfo = {}) {
   const fecha = new Date(fechaStr);
@@ -79,29 +79,28 @@ export async function crearBloqueoAgenda(empleado, fechaStr, tipo = "todo", admi
 
     idsCreados.push(res.data.id);
     console.log(`Bloqueo GC creado → ${emp} → ${res.data.id}`);
+
+    // ──────────────────────────────────────────────
+    // Guardar como "cita" separada en Firebase bajo cliente -1 por cada empleado
+    // ──────────────────────────────────────────────
+    const bloqueoData = {
+      nombre: "BLOQUEO ADMINISTRATIVO",
+      cedula: "-1",
+      servicio: "Bloqueo de agenda",
+      empleado: emp,  // Ahora individual por empleado
+      inicio: startDateTime.dateTime,
+      fechaCreacion: new Date().toISOString(),
+      estado: "bloqueo",
+      eventId: res.data.id,  // Solo este ID
+      motivo: adminInfo.motivo || (tipo === "todo" ? "Día completo bloqueado" : `Rango ${tipo}`),
+      tipoBloqueo: tipo,
+    };
+
+    await db.ref('clientes/-1/citas').push(bloqueoData);
+    console.log(`Bloqueo guardado en Firebase bajo clientes/-1 para ${emp}`);
   }
 
-  // ──────────────────────────────────────────────
-  // Guardar como "cita" en Firebase bajo cliente -1
-  // ──────────────────────────────────────────────
-  const bloqueoData = {
-    nombre: "BLOQUEO ADMINISTRATIVO",
-    cedula: "-1",
-    servicio: "Bloqueo de agenda",
-    empleado: empleados.length === 1 ? empleados[0] : "AMBOS",
-    inicio: startDateTime.dateTime,
-    fechaCreacion: new Date().toISOString(),
-    estado: "bloqueo",
-    eventId: idsCreados[0],           // guardamos el primero (para compatibilidad con cancelar)
-    eventIds: idsCreados,             // si es AMBOS → todos los ids
-    motivo: adminInfo.motivo || (tipo === "todo" ? "Día completo bloqueado" : `Rango ${tipo}`),
-    tipoBloqueo: tipo,
-  };
-
-  await db.ref('clientes/-1/citas').push(bloqueoData);
-  console.log(`Bloqueo guardado en Firebase bajo clientes/-1`);
-
-  return idsCreados[0]; // retornamos el principal para mantener compatibilidad
+  return idsCreados;  // Retorna array de todos los IDs creados
 }
 
 // ──────────────────────────────────────────────

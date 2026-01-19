@@ -208,6 +208,11 @@ async function limpiarCitasPasadas() {
           continue;
         }
 
+        if (cita.estado === "bloqueo") {
+          // Opcional: Si quieres limpiar bloques pasados, quita este 'continue' y deja que elimine
+          continue;
+        }
+
         if (cita.eventId) {
           try {
             await eliminarEvento(cita.eventId, cita.empleado);
@@ -301,7 +306,7 @@ async function reprogramarRecordatoriosPendientes(sock) {
       const citas = cliente.citas || [];
 
       citas.forEach(cita => {
-        if (cita.estado !== "confirmada") return;
+        if (cita.estado !== "confirmada") return;  // Skip bloqueos
         if (new Date(cita.inicio) <= new Date()) return;
         if (cita.recordatorioEnviado === true) return;
         if (!cliente.celular) return;
@@ -492,7 +497,7 @@ async function startBot() {
         }
 
         try {
-          const eventId = await crearBloqueoAgenda(quien, fechaStr, tipo, {
+          const eventIds = await crearBloqueoAgenda(quien, fechaStr, tipo, {
             motivo,
             creadoPor: "Admin vía WhatsApp"
           });
@@ -503,8 +508,8 @@ async function startBot() {
                   `• Fecha: ${fechaStr}\n` +
                   `• Tipo: ${tipo === "todo" ? "Todo el día" : "Horario " + tipo}\n` +
                   `• Motivo: ${motivo || "No especificado"}\n` +
-                  `• ID evento principal: ${eventId}\n\n` +
-                  `Aparecerá en #citas como BLOQUEO ADMINISTRATIVO y puedes cancelarlo con #cancelar N`
+                  `• IDs de eventos: ${eventIds.join(", ")}\n\n` +
+                  `Aparecerá en #citas como BLOQUEO ADMINISTRATIVO (separado por empleado si AMBOS) y puedes cancelarlo con #cancelar N`
           });
         } catch (err) {
           console.error("Error creando bloqueo:", err);
@@ -532,17 +537,9 @@ async function startBot() {
         const cita = citas[indice];
 
         try {
-          // Eliminar evento(s) de Google Calendar
+          // Eliminar evento de Google Calendar (solo uno, ya que ahora son individuales)
           if (cita.eventId) {
-            if (cita.cedula === "-1" && cita.eventIds?.length > 0) {
-              // Bloqueo con varios eventos (AMBOS)
-              for (let i = 0; i < cita.eventIds.length; i++) {
-                const emp = (cita.empleado === "AMBOS" && cita.eventIds.length === 2) ? (i === 0 ? "Carlos" : "Arturo") : cita.empleado;
-                await eliminarEvento(cita.eventIds[i], emp);
-              }
-            } else {
-              await eliminarEvento(cita.eventId, cita.empleado);
-            }
+            await eliminarEvento(cita.eventId, cita.empleado);
           }
 
           // Eliminar de Firebase
