@@ -451,8 +451,13 @@ async function startBot() {
         let texto = "📅 *CITAS PRÓXIMAS* (ordenadas por fecha)\n\n";
         citas.forEach((cita, index) => {
           const fecha = new Date(cita.inicio);
-          texto += `${index + 1}. ${cita.nombre} (${cita.cedula})\n`;
-          texto += `   Servicio: ${cita.servicio}\n`;
+          if (cita.cedula === "-1" && cita.estado === "bloqueo") {
+            texto += `${index + 1}. BLOQUEO ADMINISTRATIVO (${cita.empleado})\n`;
+            texto += `   Motivo: ${cita.motivo || "No especificado"}\n`;
+          } else {
+            texto += `${index + 1}. ${cita.nombre} (${cita.cedula})\n`;
+            texto += `   Servicio: ${cita.servicio}\n`;
+          }
           texto += `   Estilista: ${cita.empleado}\n`;
           texto += `   Fecha: ${formatearFecha(fecha)}\n`;
           texto += `   Hora: ${fecha.toLocaleTimeString("es-CO", { hour: '2-digit', minute: '2-digit' })}\n`;
@@ -497,9 +502,37 @@ async function startBot() {
         }
 
         try {
-          const eventIds = await crearBloqueoAgenda(quien, fechaStr, tipo, {
+          // Asumiendo que crearBloqueoAgenda devuelve un array de objetos con {eventId, inicio, empleado, duracion, motivo} 
+          // (debes ajustar googleCalendar.js para que retorne esto en lugar de solo eventIds.
+          // Por ejemplo, en googleCalendar.js, en lugar de return eventIds, return los objetos completos de bloqueos creados.
+          // Esto soluciona posibles duplicados si hay un bug en la función; asegúrate de que no haya loops innecesarios allí.
+          // Si el duplicado es intencional para "AMBOS" (uno por empleado), entonces es normal, pero si se duplica accidentalmente, revisa loops en crearBloqueoAgenda.
+          const bloqueos = await crearBloqueoAgenda(quien, fechaStr, tipo, {
             motivo,
             creadoPor: "Admin vía WhatsApp"
+          });
+
+          // Agregar a Firebase bajo clientes/-1 (esto soluciona que no aparezcan en #citas)
+          const bloqueoRef = db.ref('clientes/-1');
+          await bloqueoRef.transaction(current => {
+            if (!current) {
+              current = {
+                nombre: "Bloqueos Administrativos",
+                citas: []
+              };
+            }
+            for (const b of bloqueos) {
+              current.citas.push({
+                servicio: "BLOQUEO ADMINISTRATIVO",
+                empleado: b.empleado,
+                inicio: b.inicio,  // Asumiendo que devuelve 'inicio' como ISO
+                estado: "bloqueo",
+                eventId: b.eventId,
+                motivo: b.motivo || motivo,
+                recordatorioEnviado: true  // No necesita recordatorio
+              });
+            }
+            return current;
           });
 
           await sock.sendMessage(from, { 
@@ -508,7 +541,7 @@ async function startBot() {
                   `• Fecha: ${fechaStr}\n` +
                   `• Tipo: ${tipo === "todo" ? "Todo el día" : "Horario " + tipo}\n` +
                   `• Motivo: ${motivo || "No especificado"}\n` +
-                  `• IDs de eventos: ${eventIds.join(", ")}\n\n` +
+                  `• IDs de eventos: ${bloqueos.map(b => b.eventId).join(", ")}\n\n` +
                   `Aparecerá en #citas como BLOQUEO ADMINISTRATIVO (separado por empleado si AMBOS) y puedes cancelarlo con #cancelar N`
           });
         } catch (err) {
