@@ -1,5 +1,5 @@
 import { google } from "googleapis";
-import { db } from "./index.js";
+import path from "path";
 
 const auth = new google.auth.GoogleAuth({
   credentials: JSON.parse(process.env.CALENDAR_CREDENTIALS),
@@ -13,8 +13,8 @@ const calendar = google.calendar({
 
 // ¡Calendarios separados por empleado!
 const CALENDARS_BY_EMPLEADO = {
-  "Carlos": "57a7566fe4630dcdec998aba92b2e604bd75ae4a90cfbaad79cf3bb82d2fcacf@group.calendar.google.com",
-  "Arturo": "25bdad0375a183e752e99b772c8a9fd9d85f326818bfcd15483fe92b0a95cfd3@group.calendar.google.com",
+  "Carlos":  "57a7566fe4630dcdec998aba92b2e604bd75ae4a90cfbaad79cf3bb82d2fcacf@group.calendar.google.com", // ← TU ID REAL
+  "Arturo":  "25bdad0375a183e752e99b772c8a9fd9d85f326818bfcd15483fe92b0a95cfd3@group.calendar.google.com", // ← TU ID REAL
 };
 
 function getCalendarId(empleadoNombre) {
@@ -33,11 +33,11 @@ export async function crearEvento({
   duracionHoras,
   telefono,
   cedula,
-  esCambio = false,
-  descripcionExtra = ""   // ← nuevo parámetro opcional para motivo de bloqueo
+  esCambio = false
 }) {
   console.log("DEBUG crearEvento → inicioISO:", inicioISO);
   console.log("DEBUG crearEvento → duracionHoras:", duracionHoras);
+  console.log("DEBUG crearEvento → esCambio:", esCambio);
   console.log("DEBUG crearEvento → empleado:", empleado);
 
   const calendarId = getCalendarId(empleado);
@@ -47,18 +47,17 @@ export async function crearEvento({
     throw new Error("Fecha inicio inválida: " + inicioISO);
   }
 
-  // Margen de 15 minutos (como antes)
+  // Margen de 15 minutos
   const fin = new Date(inicio.getTime() + (duracionHoras + 0.25) * 60 * 60 * 1000);
 
   const evento = {
-    summary: servicio === "Bloqueo de agenda" ? "🔒 BLOQUEO - NO AGENDAR" : `Cita - ${servicio}`,
-    description: `Cliente: ${nombre} (${cedula})\nTeléfono: ${telefono || "—"} \n${descripcionExtra ? `\n${descripcionExtra}\n` : ""}`,
+    summary: `Cita - ${servicio}`,
+    description: `Cliente: ${nombre} (${cedula})\nTeléfono: ${telefono}\nEmpleado: ${empleado}\nServicio: ${servicio}`,
     start: { dateTime: inicio.toISOString(), timeZone: "America/Bogota" },
     end:   { dateTime: fin.toISOString(),    timeZone: "America/Bogota" },
-    colorId: servicio === "Bloqueo de agenda" ? "4" : undefined, // rojo suave para bloqueos
     reminders: {
       useDefault: false,
-      overrides: servicio === "Bloqueo de agenda" ? [] : [{ method: "popup", minutes: 120 }],
+      overrides: [{ method: "popup", minutes: 120 }],
     }
   };
 
@@ -66,7 +65,7 @@ export async function crearEvento({
     const res = await calendar.events.insert({
       calendarId,
       resource: evento,
-      sendUpdates: servicio === "Bloqueo de agenda" ? "none" : "all"
+      sendUpdates: "all"
     });
 
     console.log("Evento creado → ID:", res.data.id);

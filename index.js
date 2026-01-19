@@ -12,16 +12,18 @@ import makeWASocket, {
 } from "@whiskeysockets/baileys";
 
 import qrcode from "qrcode-terminal";
-
 import pino from "pino"; // Logger
 
-import { crearEvento, eliminarEvento } from "./googleCalendar.js";
+import { crearEvento, eliminarEvento} from "./googleCalendar.js";
 import { obtenerHorasDisponibles } from "./disponibilidad.js";
 
 // ===============================
 // CONFIGURACIÓN DEL GRUPO PARA NOTIFICACIONES Y MODO ADMIN
 // ===============================
 const GROUP_ID = '120363424425387340@g.us'; // ← CAMBIAR AQUÍ: Reemplaza con el ID real de tu grupo
+
+// NOTA: Ahora CUALQUIER mensaje enviado a este grupo se considera comando ADMIN
+// No se necesita lista de números administradores
 
 // ===============================
 // FIREBASE
@@ -37,7 +39,7 @@ if (!admin.apps.length) {
   });
 }
 
-export const db = admin.database();
+const db = admin.database();
 
 // ===============================
 // DATOS BASE
@@ -76,6 +78,7 @@ const empleados = empleadosLista.reduce((acc, e) => {
 // ===============================
 const estados = {};
 const temp = {};
+const adminState = {}; // solo tendrá clave = GROUP_ID
 
 // ===============================
 // UTILIDADES
@@ -110,11 +113,12 @@ function programarRecordatorio(sock, numeroCompletoCliente, cita, clienteData) {
   if (fechaCita <= ahora) return;
   if (cita.recordatorioEnviado === true) return;
 
+  // ── 2 horas antes ────────────────────────────────
   const dosHorasAntes = new Date(fechaCita.getTime() - 2 * 60 * 60 * 1000);
   const faltanMenosDe2Horas = ahora >= dosHorasAntes;
 
   const delay = faltanMenosDe2Horas 
-    ? 30000
+    ? 30000  // ~30 segundos si ya está muy cerca
     : dosHorasAntes.getTime() - ahora.getTime();
 
   if (delay <= 0) return;
@@ -131,6 +135,7 @@ function programarRecordatorio(sock, numeroCompletoCliente, cita, clienteData) {
         hour12: true
       });
 
+      // 1. Mensaje al CLIENTE
       let mensajeCliente = "";
 
       if (faltanMenosDe2Horas) {
@@ -148,6 +153,7 @@ function programarRecordatorio(sock, numeroCompletoCliente, cita, clienteData) {
 
       await sock.sendMessage(numeroCompletoCliente, { text: mensajeCliente });
 
+      // 2. Mensaje al GRUPO DE ADMINS
       const mensajeGrupo = `🔔 *RECORDATORIO 2 HORAS* - Cita próxima\n\n` +
                           `👤 ${clienteData.nombre || 'Cliente'} (${clienteData.cedula})\n` +
                           `📱 ${clienteData.celular ? '57' + clienteData.celular : 'No registrado'}\n` +
@@ -159,6 +165,7 @@ function programarRecordatorio(sock, numeroCompletoCliente, cita, clienteData) {
 
       await sock.sendMessage(GROUP_ID, { text: mensajeGrupo });
 
+      // Marcar como enviado (importante para no repetir)
       const clienteRef = db.ref(`clientes/${clienteData.cedula}`);
       await clienteRef.transaction(current => {
         if (!current?.citas) return current;
@@ -205,11 +212,6 @@ async function limpiarCitasPasadas() {
 
         if (new Date(cita.inicio) > new Date()) {
           citasActualizadas.push(cita);
-          continue;
-        }
-
-        if (cita.estado === "bloqueo") {
-          // Opcional: Si quieres limpiar bloques pasados, quita este 'continue' y deja que elimine
           continue;
         }
 
@@ -306,7 +308,7 @@ async function reprogramarRecordatoriosPendientes(sock) {
       const citas = cliente.citas || [];
 
       citas.forEach(cita => {
-        if (cita.estado !== "confirmada") return;  // Skip bloqueos
+        if (cita.estado !== "confirmada") return;
         if (new Date(cita.inicio) <= new Date()) return;
         if (cita.recordatorioEnviado === true) return;
         if (!cliente.celular) return;
@@ -324,6 +326,7 @@ async function reprogramarRecordatoriosPendientes(sock) {
   }
 }
 
+// Nueva función: Obtener TODAS las citas futuras (para admins)
 async function obtenerTodasCitasFuturas() {
   try {
     const snapshot = await db.ref('clientes').once('value');
@@ -337,7 +340,7 @@ async function obtenerTodasCitasFuturas() {
 
       if (cliente.citas && Array.isArray(cliente.citas)) {
         cliente.citas.forEach(cita => {
-          if (new Date(cita.inicio) > new Date() && (cita.estado === "confirmada" || cita.estado === "bloqueo")) {
+          if (new Date(cita.inicio) > new Date() && cita.estado === "confirmada") {
             todasCitas.push({
               cedula,
               nombre: cliente.nombre || "Sin nombre",
@@ -405,310 +408,438 @@ async function startBot() {
 
     const esGrupoAdmin = from === GROUP_ID;
 
+    // Posibles valores de adminState[GROUP_ID]
+    const ADMIN_MODES = {
+      MAIN:          'main',
+      LIST_CITAS:    'list_citas',
+      CANCEL_SELECT: 'cancel_select',
+      CANCEL_CONFIRM:'cancel_confirm',
+      BLOCK_WHO:     'block_who',
+      BLOCK_DATE:    'block_date',
+      BLOCK_TYPE:    'block_type',     // todo el día o rango
+      BLOCK_RANGE:   'block_range',    // pidiendo las dos horas
+      BLOCK_CONFIRM: 'block_confirm'
+    };
     // ===============================
     // COMANDOS ADMIN (solo en el grupo)
+    // Cualquier mensaje en el grupo se considera comando admin
+    // ===============================
+    // ────────────────────────────────────────────────
+    //          NUEVO MANEJO DE ADMIN – MENÚ INTERACTIVO
+    // ────────────────────────────────────────────────
+
+    // ===============================
+    // COMANDOS ADMIN (solo en el grupo)
+    // Cualquier mensaje en el grupo se considera comando admin
     // ===============================
     if (esGrupoAdmin) {
-      if (respuesta === "#HELP" || respuesta === "#AYUDA") {
-        const textoHelp =
-          "🆘 *AYUDA – COMANDOS DE ADMINISTRADOR*\n\n" +
+      const groupId = from;
 
-          "📅 *#CITAS*\n" +
-          "Muestra la lista de todas las citas futuras, ordenadas por fecha.\n" +
-          "Cada cita tiene un número que se usa para cancelarla.\n\n" +
+      if (!adminState[groupId]) {
+        adminState[groupId] = { mode: 'main', data: {} };
+      }
 
-          "❌ *#CANCELAR NÚMERO*\n" +
-          "Cancela una cita usando el número que aparece en *#citas*.\n" +
-          "Ejemplo:\n" +
-          "#cancelar 3\n\n" +
+      let text = (msg.message.conversation || msg.message.extendedTextMessage?.text || '').trim();
+      const textUpper = text.toUpperCase();
 
-          "⛔ *#BLOQUEAR EMPLEADO FECHA HORARIO*\n" +
-          "Bloquea la agenda de un empleado.\n\n" +
-          "• Empleado: CARLOS, ARTURO o AMBOS\n" +
-          "• Fecha: YYYY-MM-DD\n" +
-          "• Horario:\n" +
-          "   - `todo` → bloquea todo el día\n" +
-          "   - `HH:MM HH:MM` → bloquea un rango de horas\n\n" +
-          "Ejemplos:\n" +
-          "#bloquear CARLOS 2025-03-15 todo\n" +
-          "#bloquear AMBOS 2025-04-02 09:00 14:00\n\n" +
+      console.log(`[ADMIN] Modo: ${adminState[groupId].mode} | Texto recibido: "${text}" (${textUpper})`);
 
-          "ℹ️ Escribe los comandos exactamente como se muestran.\n" +
-          "💖 Porque Tú Eres Bella";
+      const sendAdmin = async (txt) => {
+        await sock.sendMessage(groupId, { text: txt });
+      };
 
-        await sock.sendMessage(from, { text: textoHelp });
+      // ── Comandos de escape / volver (prioridad máxima) ────────────────────────────────
+      if (["MENU", "INICIO", "VOLVER", "ATRAS", "0"].includes(textUpper)) {
+        adminState[groupId].mode = 'main';
+        adminState[groupId].data = {};
+        
+        const menuText = 
+          `🛠️ *MENÚ ADMINISTRACIÓN – Porque Tú Eres Bella*\n\n` +
+          `¿Qué deseas hacer?\n\n` +
+          `1️⃣ Ver todas las citas futuras\n` +
+          `2️⃣ Cancelar una cita\n` +
+          `3️⃣ Bloquear agenda de estilista(s)\n` +
+          `4️⃣ Ayuda rápida\n\n` +
+          `Escribe solo el número (1-4)\n` +
+          `• Escribe MENU en cualquier momento para volver aquí`;
+
+        await sendAdmin(menuText);
         return;
       }
 
-      if (respuesta === "#CITAS" || respuesta === "#CITA") {
-        const citas = await obtenerTodasCitasFuturas();
+      const currentMode = adminState[groupId].mode;
 
-        if (citas.length === 0) {
-          await sock.sendMessage(from, { text: "📅 No hay citas futuras registradas en este momento." });
-          return;
-        }
+      // ── MODO PRINCIPAL ───────────────────────────────────────────────────────────────
+      if (currentMode === 'main') {
+        if (textUpper === '1') {
+          adminState[groupId].mode = 'list_citas';
 
-        let texto = "📅 *CITAS PRÓXIMAS* (ordenadas por fecha)\n\n";
-        citas.forEach((cita, index) => {
-          const fecha = new Date(cita.inicio);
-          if (cita.cedula === "-1" && cita.estado === "bloqueo") {
-            texto += `${index + 1}. BLOQUEO ADMINISTRATIVO (${cita.empleado})\n`;
-            texto += `   Motivo: ${cita.motivo || "No especificado"}\n`;
-          } else {
-            texto += `${index + 1}. ${cita.nombre} (${cita.cedula})\n`;
-            texto += `   Servicio: ${cita.servicio}\n`;
-          }
-          texto += `   Estilista: ${cita.empleado}\n`;
-          texto += `   Fecha: ${formatearFecha(fecha)}\n`;
-          texto += `   Hora: ${fecha.toLocaleTimeString("es-CO", { hour: '2-digit', minute: '2-digit' })}\n`;
-          texto += `   Cel: ${cita.celular ? '57' + cita.celular : 'No registrado'}\n\n`;
-        });
+          const todas = await obtenerTodasCitasFuturas();
 
-        await sock.sendMessage(from, { text: texto });
-        return;
-      }
-
-      if (respuesta.startsWith("#BLOQUEAR ")) {
-        const partes = respuesta.split(" ").slice(1);
-        if (partes.length < 3) {
-          await sock.sendMessage(from, { 
-            text: "Formato:\n#bloquear CARLOS|ARTURO|AMBOS YYYY-MM-DD HH:MM HH:MM [motivo opcional...]\n" +
-                  "   o\n#bloquear CARLOS|ARTURO|AMBOS YYYY-MM-DD todo [motivo opcional...]\n\n" +
-                  "Ejemplos:\n" +
-                  "#bloquear CARLOS 2025-03-20 09:00 18:00 Capacitación todo el día\n" +
-                  "#bloquear AMBOS 2025-04-02 todo Reunión de equipo\n" +
-                  "#bloquear ARTURO 2025-04-15 13:00 20:30"
-          });
-          return;
-        }
-
-        const quien = partes[0].toUpperCase();
-        const fechaStr = partes[1];
-        let horaInicio, horaFin, motivo;
-
-        if (partes[2].toLowerCase() === "todo") {
-          horaInicio = "07:00";
-          horaFin    = "22:00";
-          motivo = partes.slice(3).join(" ") || "Bloqueo administrativo (día completo)";
-        } else {
-          if (partes.length < 4) {
-            await sock.sendMessage(from, { text: "Cuando no uses 'todo', debes indicar hora inicio y hora fin (HH:MM HH:MM)" });
+          if (todas.length === 0) {
+            await sendAdmin("📅 No hay citas futuras registradas en este momento.\n\nEscribe MENU para volver.");
+            adminState[groupId].mode = 'main';
             return;
           }
-          horaInicio = partes[2];
-          horaFin    = partes[3];
-          motivo = partes.slice(4).join(" ") || "Bloqueo administrativo";
-        }
 
-        if (!["CARLOS", "ARTURO", "AMBOS"].includes(quien)) {
-          await sock.sendMessage(from, { text: "Empleado debe ser CARLOS, ARTURO o AMBOS" });
+          let txt = "📅 *CITAS CONFIRMADAS FUTURAS* (ordenadas por fecha)\n\n";
+          todas.forEach((c, i) => {
+            const fecha = new Date(c.inicio);
+            txt += `${i+1}. ${c.nombre} (${c.cedula})\n`;
+            txt += `   • ${c.servicio}\n`;
+            txt += `   • ${c.empleado}\n`;
+            txt += `   • ${formatearFecha(fecha)} ${fecha.toLocaleTimeString("es-CO", {hour:'2-digit', minute:'2-digit'})}\n\n`;
+          });
+
+          txt += "Escribe MENU para volver al menú principal.";
+          await sendAdmin(txt);
           return;
         }
 
-        if (!/^\d{2}:\d{2}$/.test(horaInicio) || !/^\d{2}:\d{2}$/.test(horaFin)) {
-          await sock.sendMessage(from, { text: "Formato de hora inválido. Usa HH:MM" });
+        if (textUpper === '2') {
+          adminState[groupId].mode = 'cancel_select';
+
+          const todas = await obtenerTodasCitasFuturas();
+
+          if (todas.length === 0) {
+            await sendAdmin("No hay citas para cancelar en este momento.\n\nEscribe MENU para volver.");
+            adminState[groupId].mode = 'main';
+            return;
+          }
+
+          let txt = "❌ *SELECCIONA LA CITA A CANCELAR*\n\n";
+          todas.forEach((c, i) => {
+            const fecha = new Date(c.inicio);
+            txt += `${i+1}) ${c.nombre} (${c.cedula}) – ${c.servicio} con ${c.empleado}\n`;
+            txt += `    ${formatearFecha(fecha)} ${fecha.toLocaleTimeString("es-CO", {hour:'2-digit', minute:'2-digit'})}\n\n`;
+          });
+
+          txt += "Escribe el **número** de la cita que deseas cancelar\n";
+          txt += "o escribe MENU para volver";
+
+          await sendAdmin(txt);
           return;
         }
 
-        // ───────────────────────────────────────────────────────────────
-        // NUEVA FORMA DE CREAR LA FECHA - AJUSTE PARA COLOMBIA (UTC-5)
-        // ───────────────────────────────────────────────────────────────
-        const [year, month, day] = fechaStr.split('-').map(Number);
-        const [hInicio, mInicio] = horaInicio.split(':').map(Number);
-        const [hFin, mFin] = horaFin.split(':').map(Number);
-
-        // Creamos la fecha en UTC pero la ajustamos restando 5 horas (porque el servidor está en UTC)
-        const inicioUTC = new Date(Date.UTC(year, month - 1, day, hInicio, mInicio, 0, 0));
-        inicioUTC.setUTCHours(inicioUTC.getUTCHours() + 5);   // ← AJUSTE COLOMBIA
-
-        const finUTC = new Date(Date.UTC(year, month - 1, day, hFin, mFin, 0, 0));
-        finUTC.setUTCHours(finUTC.getUTCHours() + 5);         // ← AJUSTE COLOMBIA
-
-        const duracionHoras = (finUTC - inicioUTC) / (1000 * 60 * 60);
-
-        if (duracionHoras <= 0) {
-          await sock.sendMessage(from, { text: "La hora final debe ser mayor a la hora inicial." });
+        if (textUpper === '3') {
+          adminState[groupId].mode = 'block_who';
+          await sendAdmin(
+            `🛑 *BLOQUEAR AGENDA*\n\n` +
+            `¿A quién(es) deseas bloquear?\n\n` +
+            `1️⃣ Carlos\n` +
+            `2️⃣ Arturo\n` +
+            `3️⃣ Ambos\n\n` +
+            `Escribe el número (1,2,3) o MENU para volver`
+          );
           return;
         }
 
-        const inicioISO = inicioUTC.toISOString();
+        if (textUpper === '4') {
+          await sendAdmin(
+            `🆘 *AYUDA RÁPIDA ADMIN*\n\n` +
+            `• Usa los números del menú principal\n` +
+            `• En cualquier momento escribe MENU para volver\n` +
+            `• Los bloqueos se guardan en clientes/-1\n` +
+            `• Las cancelaciones notifican al cliente automáticamente\n\n` +
+            `¡Cualquier duda pregunta! 💜`
+          );
+          return;
+        }
 
-        console.log(`[BLOQUEO] fechaStr=${fechaStr} | ${horaInicio} → ${inicioISO} | duración=${duracionHoras}h`);
+        // Respuesta inválida en modo main
+        await sendAdmin("Por favor escribe solo el número de la opción (1,2,3,4)\nO MENU para refrescar el menú.");
+        return;
+      }
 
-        const empleados = quien === "AMBOS" ? ["Carlos", "Arturo"] : [quien.charAt(0).toUpperCase() + quien.slice(1).toLowerCase()];
+      // ── CANCELAR CITA - Selección ───────────────────────────────────────────────────
+      if (currentMode === 'cancel_select') {
+        if (/^\d+$/.test(text)) {
+          const idx = parseInt(text) - 1;
+          const todas = await obtenerTodasCitasFuturas();
 
-        const idsCreados = [];
+          if (idx < 0 || idx >= todas.length) {
+            await sendAdmin(`Número inválido. Elige entre 1 y ${todas.length}.\nEscribe MENU para volver.`);
+            return;
+          }
 
-        for (const emp of empleados) {
+          const cita = todas[idx];
+          adminState[groupId].data = { citaToCancel: cita };
+
+          adminState[groupId].mode = 'cancel_confirm';
+
+          const fecha = new Date(cita.inicio);
+          const confirmTxt = 
+            `⚠️ *¿REALMENTE DESEAS CANCELAR ESTA CITA?*\n\n` +
+            `Cliente: ${cita.nombre} (${cita.cedula})\n` +
+            `Servicio: ${cita.servicio}\n` +
+            `Estilista: ${cita.empleado}\n` +
+            `Fecha y hora: ${formatearFecha(fecha)} ${fecha.toLocaleTimeString("es-CO", {hour:'2-digit', minute:'2-digit'})}\n\n` +
+            `Escribe **SI** para confirmar la cancelación\n` +
+            `Escribe cualquier otra cosa o MENU para cancelar esta acción`;
+
+          await sendAdmin(confirmTxt);
+          return;
+        }
+
+        await sendAdmin("Escribe solo el número de la cita que quieres cancelar\nO MENU para volver.");
+        return;
+      }
+
+      // ── CANCELAR CITA - Confirmación ────────────────────────────────────────────────
+      if (currentMode === 'cancel_confirm') {
+        if (["SI", "SÍ"].includes(textUpper)) {
+          const cita = adminState[groupId].data.citaToCancel;
+
           try {
-            const eventId = await crearEvento({
-              nombre: "BLOQUEO ADMINISTRATIVO",
-              servicio: "Bloqueo de agenda",
-              empleado: emp,
-              inicioISO: inicioISO,
-              duracionHoras: duracionHoras,
-              telefono: "—",
-              cedula: "0",
-              descripcionExtra: `Motivo: ${motivo}\nCreado por: Admin vía WhatsApp`
-            });
+            if (cita.eventId) {
+              await eliminarEvento(cita.eventId, cita.empleado);
+            }
 
-            idsCreados.push(eventId);
-
-            const citaData = {
-              nombre: "BLOQUEO ADMINISTRATIVO",
-              cedula: "0",
-              servicio: "Bloqueo de agenda",
-              empleado: emp,
-              inicio: inicioISO,
-              fechaCreacion: new Date().toISOString(),
-              estado: "bloqueo",
-              eventId: eventId, 
-              motivo: motivo
-            };
-
-            // Mejor usar transaction para mantener consistencia con citas normales
-            const bloqueosRef = db.ref('clientes/0');
-            await bloqueosRef.transaction(current => {
-              current = current || {};
-              current.citas = current.citas || [];
-              current.citas.push(citaData);
+            const clienteRef = db.ref(`clientes/${cita.cedula}`);
+            await clienteRef.transaction(current => {
+              if (!current?.citas) return current;
+              current.citas = current.citas.filter(c => 
+                !(c.inicio === cita.inicio && c.empleado === cita.empleado)
+              );
               return current;
             });
 
-            console.log(`Bloqueo creado → ${emp} → ${eventId}`);
-          } catch (err) {
-            console.error(`Error creando bloqueo para ${emp}:`, err);
-          }
-        }
+            if (cita.servicio === "Diagnóstico") {
+              await clienteRef.update({ requiereDiagnostico: true });
+            }
 
-      if (idsCreados.length === 0) {
-        await sock.sendMessage(from, { text: "❌ No se pudo crear ningún bloqueo. Revisa los logs." });
-        return;
-      }
-
-      const tipoBloqueo = (horaInicio === "07:00" && horaFin === "22:00") 
-        ? "día completo (7:00 – 22:00)" 
-        : `horario ${horaInicio} – ${horaFin}`;
-
-      await sock.sendMessage(from, { 
-        text: `✅ **Bloqueo administrativo creado**!\n\n` +
-              `• Empleado(s): ${empleados.join(" y ")}\n` +
-              `• Fecha: ${fechaStr}\n` +
-              `• Horario: ${tipoBloqueo}\n` +
-              `• Motivo: ${motivo}\n` +
-              `• Evento(s) creado(s): ${idsCreados.join(", ")}\n\n` +
-              `Aparecerá en #citas como BLOQUEO ADMINISTRATIVO y puedes cancelarlo con #cancelar N`
-      });
-
-      return;
-    }
-
-      if (respuesta.startsWith("#CANCELAR ")) {
-        const numStr = respuesta.split(" ")[1];
-        const indice = parseInt(numStr) - 1;
-
-        if (isNaN(indice) || indice < 0) {
-          await sock.sendMessage(from, { text: "Formato: #cancelar NÚMERO\nEjemplo: #cancelar 4" });
-          return;
-        }
-
-        const citas = await obtenerTodasCitasFuturas();
-
-        if (indice >= citas.length) {
-          await sock.sendMessage(from, { text: `Solo hay ${citas.length} registros. Usa #citas para ver.` });
-          return;
-        }
-
-        const cita = citas[indice];
-
-        try {
-          // Eliminar evento de Google Calendar (solo uno, ya que ahora son individuales)
-          if (cita.eventId) {
-            await eliminarEvento(cita.eventId, cita.empleado);
-          }
-
-          // Eliminar de Firebase
-          const clienteRef = db.ref(`clientes/${cita.cedula}`);
-          await clienteRef.transaction(current => {
-            if (!current?.citas) return current;
-            current.citas = current.citas.filter(c => 
-              !(c.inicio === cita.inicio && c.empleado === cita.empleado)
-            );
-            return current;
-          });
-
-          if (cita.servicio === "Diagnóstico" && cita.cedula !== "-1") {
-            await clienteRef.update({ requiereDiagnostico: true });
-          }
-
-          // Mensaje diferente si es bloqueo
-          if (cita.cedula === "-1") {
-            await sock.sendMessage(from, { 
-              text: `🟢 **Bloqueo cancelado exitosamente**\n\n` +
-                    `Fecha: ${formatearFecha(new Date(cita.inicio))}\n` +
-                    `Empleado: ${cita.empleado}\n` +
-                    `Motivo original: ${cita.motivo || "—"}` 
-            });
-
-            await sock.sendMessage(GROUP_ID, { 
-              text: `🔓 *BLOQUEO CANCELADO*\n\n` +
-                    `Fecha: ${formatearFecha(new Date(cita.inicio))}\n` +
-                    `Empleado: ${cita.empleado}\n` +
-                    `Motivo: ${cita.motivo || "No especificado"}\n` +
-                    `Espacio liberado en agenda.` 
-            });
-          } else {
-            // Notificación al cliente
             if (cita.celular) {
-              const numeroCliente = `57${cita.celular}@s.whatsapp.net`;
+              const numero = `57${cita.celular}@s.whatsapp.net`;
               const fechaCita = new Date(cita.inicio);
-              await sock.sendMessage(numeroCliente, { 
+              await sock.sendMessage(numero, { 
                 text: `❌ *Tu cita ha sido CANCELADA por el salón*\n\n` +
-                      `Cliente: ${cita.nombre}\n` +
-                      `Cédula: ${cita.cedula}\n` +
                       `Servicio: ${cita.servicio}\n` +
                       `Estilista: ${cita.empleado}\n` +
                       `Fecha: ${formatearFecha(fechaCita)}\n` +
-                      `Hora: ${fechaCita.toLocaleTimeString("es-CO", { hour: '2-digit', minute: '2-digit' })}\n\n` +
-                      `Lamentamos el inconveniente. Puedes agendar una nueva cita respondiendo con 1.\n` +
-                      `💖 Porque Tú Eres Bella` 
+                      `Lamentamos el inconveniente. Puedes agendar nuevamente escribiendo 1.\n💖 Porque Tú Eres Bella`
               });
             }
 
-            // Notificación al grupo - CANCELACIÓN POR ADMIN
-            const fechaCitaAdmin = new Date(cita.inicio);
-            const mensajeCancelAdmin = 
-              `❌ *CITA CANCELADA DESDE ADMINISTRACIÓN*\n\n` +
-              `👤 Cliente: ${cita.nombre} (${cita.cedula})\n` +
-              `💇‍♀️ Servicio: ${cita.servicio}\n` +
-              `👨‍💼 Estilista: ${cita.empleado}\n` +
-              `📅 Fecha: ${formatearFecha(fechaCitaAdmin)}\n` +
-              `🕐 Hora: ${fechaCitaAdmin.toLocaleTimeString("es-CO", { hour: '2-digit', minute: '2-digit' })}\n\n` +
-              `Motivo: Cancelación administrativa\n` +
-              `Espacio liberado en agenda.`;
-
-            await sock.sendMessage(GROUP_ID, { text: mensajeCancelAdmin })
-              .catch(err => console.error("Error notificando cancelación admin al grupo:", err));
-
-            await sock.sendMessage(from, { 
-              text: `✅ Cita #${indice+1} CANCELADA exitosamente.\n` +
-                    `Cliente: ${cita.nombre} (${cita.cedula})\n` +
-                    `Servicio: ${cita.servicio} con ${cita.empleado}\n` +
-                    `Se notificó al cliente.` 
-            });
+            await sendAdmin(
+              `✅ Cita cancelada exitosamente.\n` +
+              `Cliente: ${cita.nombre} (${cita.cedula})\n` +
+              `Servicio: ${cita.servicio} con ${cita.empleado}\n\n` +
+              `Escribe MENU para volver.`
+            );
+          } catch (err) {
+            console.error("Error al cancelar desde menú admin:", err);
+            await sendAdmin("❌ Error al cancelar la cita. Revisa los logs.");
           }
 
-        } catch (err) {
-          console.error("Error cancelando cita/bloqueo desde admin:", err);
-          await sock.sendMessage(from, { text: "❌ Error al cancelar. Revisa los logs." });
+          adminState[groupId].mode = 'main';
+          adminState[groupId].data = {};
+          return;
         }
 
+        // Cualquier otra respuesta ≠ SI
+        await sendAdmin("Acción cancelada.\n\nEscribe MENU para volver al menú principal.");
+        adminState[groupId].mode = 'main';
+        adminState[groupId].data = {};
         return;
       }
+
+      // ── BLOQUEAR AGENDA - Selección de quién ────────────────────────────────────────
+      if (currentMode === 'block_who') {
+        if (['1','2','3'].includes(text)) {
+          adminState[groupId].data = {
+            empleados: text === '1' ? ['Carlos'] :
+                      text === '2' ? ['Arturo'] :
+                      ['Carlos', 'Arturo']
+          };
+          adminState[groupId].mode = 'block_date';
+
+          await sendAdmin(
+            `📅 *Fecha del bloqueo*\n\n` +
+            `Escribe la fecha en formato YYYY-MM-DD\n` +
+            `Ejemplo: 2025-04-15\n\n` +
+            `o escribe MENU para volver`
+          );
+          return;
+        }
+
+        await sendAdmin("Por favor escribe 1, 2 o 3 (o MENU para volver).");
+        return;
+      }
+
+      // ── BLOQUEAR AGENDA - Fecha ─────────────────────────────────────────────────────
+      if (currentMode === 'block_date') {
+        if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+          adminState[groupId].data.fecha = text;
+          adminState[groupId].mode = 'block_type';
+
+          await sendAdmin(
+            `⏰ *Tipo de bloqueo para ${text}*\n\n` +
+            `1️⃣ Todo el día\n` +
+            `2️⃣ Rango horario específico\n\n` +
+            `Escribe 1 o 2 (o MENU para volver)`
+          );
+          return;
+        }
+
+        await sendAdmin("Formato de fecha incorrecto. Usa YYYY-MM-DD\nEjemplo: 2025-04-15\nO MENU para volver.");
+        return; 
+      }
+
+      // ── BLOQUEAR AGENDA - Tipo ──────────────────────────────────────────────────────
+      if (currentMode === 'block_type') {
+        if (text === '1') {
+          adminState[groupId].data.horaInicio = "07:00";
+          adminState[groupId].data.horaFin = "19:00";
+          adminState[groupId].mode = 'block_confirm';
+          await sendAdmin(
+            `🕐 Deseas crear este bloqueo de agenda?\n\n` +
+            'Vas a bloquear el dia ' + adminState[groupId].data.fecha + '\n' +
+            'Escribe "SI" para confirmar o "NO" para cancelar'
+          )
+
+          return;
+        } else if (text === '2') {
+          adminState[groupId].mode = 'block_range';
+          await sendAdmin(
+            `🕐 *Rango horario*\n\n` +
+            `Escribe la hora de INICIO y FIN separadas por espacio\n` +
+            `Formato: HH:MM HH:MM\n` +
+            `Ejemplo: 09:30 13:45\n\n` +
+            `o escribe MENU para volver`
+          );
+          return;
+        } else {
+          await sendAdmin("Por favor escribe 1 o 2 (o MENU para volver).");
+          return;
+        }
+      }
+
+      // ── BLOQUEAR AGENDA - Rango horario ─────────────────────────────────────────────
+      if (currentMode === 'block_range') {
+        if (text.includes(" ")) {
+          const [ini, fin] = text.split(" ").map(t => t.trim());
+          if (/^\d{2}:\d{2}$/.test(ini) && /^\d{2}:\d{2}$/.test(fin)) {
+            adminState[groupId].data.horaInicio = ini;
+            adminState[groupId].data.horaFin = fin;
+            adminState[groupId].mode = 'block_confirm';
+            
+            await sendAdmin(
+              `🕐 Deseas crear este bloqueo de agenda?\n\n` +
+              'Vas a bloquear el dia ' + adminState[groupId].data.fecha + '\n' +
+              'Desde las ' + adminState[groupId].data.horaInicio + ' hasta las ' + adminState[groupId].data.horaFin + '\n' + 
+              'Escribe "SI" para confirmar o "NO" para cancelar'
+            )
+
+            return;
+          } else {
+            await sendAdmin("Formato incorrecto. Usa HH:MM HH:MM\nEjemplo: 09:30 14:00\nO MENU para volver.");
+            return;
+          }
+        } else {
+          await sendAdmin("Debes escribir dos horas separadas por espacio.\nO MENU para volver.");
+          return;
+        }
+      }
+
+      // ── BLOQUEAR AGENDA - Confirmación final ────────────────────────────────────────
+      if (currentMode === 'block_confirm') {
+        const d = adminState[groupId].data;
+        const empleadosTxt = d.empleados.length === 2 ? "Carlos y Arturo" : d.empleados[0];
+
+        if (["SI", "SÍ"].includes(textUpper)) {
+          try {
+            const fechaBase = new Date(d.fecha);
+            const [hIni, mIni] = d.horaInicio.split(":").map(Number);
+            const [hFin, mFin] = d.horaFin.split(":").map(Number);
+
+            const inicioDate = new Date(fechaBase);
+            inicioDate.setHours(hIni, mIni, 0, 0);
+
+            const finDate = new Date(fechaBase);
+            finDate.setHours(hFin, mFin, 0, 0);
+
+            const duracionHoras = (finDate - inicioDate) / (3600 * 1000);
+
+            const fechaBaseDB = new Date(fechaBase);
+            fechaBaseDB.setDate(fechaBaseDB.getDate() + 1);   // ← +1 día SOLO para DB
+
+            const inicioDateDB = new Date(fechaBaseDB);
+            inicioDateDB.setHours(hIni, mIni, 0, 0);
+
+            // (finDateDB no es estrictamente necesario si solo guardas inicio, pero por consistencia)
+            const finDateDB = new Date(fechaBaseDB);
+            finDateDB.setHours(hFin, mFin, 0, 0);
+
+            const bloqueosCreados = [];
+
+            for (const emp of d.empleados) {
+              const eventId = await crearEvento({
+                nombre: `BLOQUEO AGENDA`,
+                servicio: "BLOQUEO",
+                empleado: emp,
+                inicioISO: inicioDateDB.toISOString(),
+                duracionHoras,
+                telefono: null,
+                cedula: "-1",
+                esCambio: false,
+                notas: `Bloqueo administrativo`
+              });
+
+              bloqueosCreados.push({
+                nombre: "BLOQUEO ADMINISTRATIVO",
+                cedula: "-1",
+                servicio: "BLOQUEO",
+                empleado: emp,
+                inicio: inicioDateDB.toISOString(),
+                fechaCreacion: new Date().toISOString(),
+                estado: "confirmada",
+                eventId,
+                recordatorioEnviado: true,
+                notas: `Bloqueo ${d.horaInicio}-${d.horaFin}`
+              });
+            }
+
+            const ref = db.ref(`clientes/-1`);
+            await ref.transaction(curr => {
+              curr = curr || { citas: [] };
+              curr.citas.push(...bloqueosCreados);
+              return curr;
+            });
+
+            await sendAdmin(
+              `✅ Bloqueo creado exitosamente!\n\n` +
+              `Empleados: ${d.empleados.join(" y ")}\n` +
+              `Fecha: ${d.fecha}\n` +
+              `Horario: ${d.horaInicio} – ${d.horaFin}\n\n` +
+              `Escribe MENU para volver`
+            );
+          } catch (err) {
+            console.error("Error creando bloqueo desde menú:", err);
+            await sendAdmin("❌ Error al crear el bloqueo. Revisa los logs.");
+          }
+
+          adminState[groupId].mode = 'main';
+          adminState[groupId].data = {};
+          return;
+        }
+
+        // No dijo SI
+        await sendAdmin("Bloqueo cancelado.\n\nEscribe MENU para volver al menú principal.");
+        adminState[groupId].mode = 'main';
+        adminState[groupId].data = {};
+        return;
+      }
+
+      // ── Último caso de seguridad ────────────────────────────────────────────────────
+      console.warn(`[ADMIN] Modo no manejado: ${currentMode}`);
+      adminState[groupId].mode = 'main';
+      adminState[groupId].data = {};
+      await sendAdmin("Modo no reconocido. Volviendo al menú principal...\n\nEscribe MENU para continuar.");
+      return;
     }
 
     // ===============================
-    // INICIO - MENSAJE DE BIENVENIDA
+    // INICIO - MENSAJE DE BIENV  ENIDA
     // ===============================
     if (!estados[from]) {
       estados[from] = "INICIO";
@@ -718,6 +849,9 @@ async function startBot() {
       return;
     }
 
+    // ===============================
+    // COMANDOS GENERALES - MENU, AYUDA
+    // ===============================
     if (["MENU", "INICIO", "PRINCIPAL", "AYUDA", "HELP"].includes(respuesta)) {
       delete estados[from];
       delete temp[from];
@@ -819,6 +953,9 @@ async function startBot() {
       return;
     }
 
+    // ===============================
+    // SELECCIONAR CITA PARA GESTIONAR (múltiples citas)
+    // ===============================
     if (estados[from] === "SELECCIONAR_CITA_GESTIONAR") {
       const indice = parseInt(respuesta) - 1;
       if (isNaN(indice) || indice < 0 || indice >= temp[from].citasExistentes.length) {
@@ -835,6 +972,9 @@ async function startBot() {
       return;
     }
 
+    // ===============================
+    // GESTIONAR CITA (CAMBIAR O CANCELAR)
+    // ===============================
     if (estados[from] === "GESTIONAR_CITA") {
       const cita = temp[from].citaExistente;
       
@@ -874,20 +1014,6 @@ async function startBot() {
             await clienteRef.update({ requiereDiagnostico: true });
           }
 
-          // Notificación al GRUPO - CANCELACIÓN POR CLIENTE
-          const fechaCita = new Date(cita.inicio);
-          const mensajeCancelacionGrupo = 
-            `❌ *CITA CANCELADA POR EL CLIENTE*\n\n` +
-            `👤 Cliente: ${cita.nombre || "Sin nombre"} (${temp[from].cedula})\n` +
-            `💇‍♀️ Servicio: ${cita.servicio}\n` +
-            `👨‍💼 Estilista: ${cita.empleado}\n` +
-            `📅 Fecha: ${formatearFecha(fechaCita)}\n` +
-            `🕐 Hora: ${fechaCita.toLocaleTimeString("es-CO", { hour: '2-digit', minute: '2-digit' })}\n\n` +
-            `Espacio liberado en agenda.`;
-
-          await sock.sendMessage(GROUP_ID, { text: mensajeCancelacionGrupo })
-            .catch(err => console.error("No se pudo notificar cancelación al grupo:", err));
-
           await sock.sendMessage(from, { 
             text: "❌ *Cita cancelada exitosamente.*\n\nSi deseas agendar una nueva, escribe '1️⃣' en el menú principal.\n\nEscribe 'MENU' para volver." 
           });
@@ -917,6 +1043,9 @@ async function startBot() {
       return;
     }
 
+    // ===============================
+    // CONFIRMAR TIPO DE CAMBIO
+    // ===============================
     if (estados[from] === "CONFIRMAR_CAMBIO_TIPO") {
       if (["1"].includes(respuesta)) {
         estados[from] = "CONFIRMAR_CLIENTE";
@@ -940,6 +1069,9 @@ async function startBot() {
       return;
     }
 
+    // ===============================
+    // CITA NO ENCONTRADA
+    // ===============================
     if (estados[from] === "CONSULTAR_NO_ENCONTRADA") {
       if (["SI", "SÍ", "1"].includes(respuesta)) {
         estados[from] = "MENU_SERVICIOS";
@@ -967,6 +1099,9 @@ async function startBot() {
       return;
     }
 
+    // ===============================
+    // SELECCIÓN DE SERVICIO (nueva cita o cambio)
+    // ===============================
     if (estados[from] === "MENU_SERVICIOS" || estados[from] === "MENU_SERVICIOS_CAMBIO") {
       const servicioSeleccionado = serviciosLista.find(s => s.id === respuesta);
       if (!servicioSeleccionado) {
@@ -994,6 +1129,9 @@ async function startBot() {
       return;
     }
 
+    // ===============================
+    // SELECCIÓN DE EMPLEADO
+    // ===============================
     if (estados[from] === "SELECCION_EMPLEADO") {
       const empleadoSeleccionado = empleadosLista.find(e => e.id === respuesta);
       if (!empleadoSeleccionado) {
@@ -1012,6 +1150,9 @@ async function startBot() {
       return;
     }
 
+    // ===============================
+    // INGRESAR CÉDULA
+    // ===============================
     if (estados[from] === "INGRESAR_CEDULA") {
       if (!/^\d{5,}$/.test(originalText)) {
         await sock.sendMessage(from, { 
@@ -1059,6 +1200,9 @@ async function startBot() {
       return;
     }
 
+    // ===============================
+    // CONFIRMAR SI ES NUEVO
+    // ===============================
     if (estados[from] === "CONFIRMAR_ES_NUEVO") {
       if (["SI", "SÍ"].includes(respuesta)) {
         if (temp[from].servicio.nombre !== "Diagnóstico") {
@@ -1089,6 +1233,9 @@ async function startBot() {
       return;
     }
 
+    // ===============================
+    // INGRESAR NOMBRE (nuevo)
+    // ===============================
     if (estados[from] === "INGRESAR_NOMBRE") {
       if (originalText.trim().length < 2) {
         await sock.sendMessage(from, { 
@@ -1106,6 +1253,9 @@ async function startBot() {
       return;
     }
 
+    // ===============================
+    // INGRESAR NOMBRE (existente que dijo NO ser nuevo)
+    // ===============================
     if (estados[from] === "INGRESAR_NOMBRE_EXISTENTE") {
       if (originalText.trim().length < 2) {
         await sock.sendMessage(from, { 
@@ -1123,6 +1273,9 @@ async function startBot() {
       return;
     }
 
+    // ===============================
+    // INGRESAR CELULAR
+    // ===============================
     if (estados[from] === "INGRESAR_CELULAR") {
       if (!/^\d{10}$/.test(originalText)) {
         await sock.sendMessage(from, { 
@@ -1157,6 +1310,9 @@ async function startBot() {
       return;
     }
 
+    // ===============================
+    // CONFIRMAR INFORMACIÓN DEL CLIENTE
+    // ===============================
     if (estados[from] === "CONFIRMAR_CLIENTE") {
       if (["NO"].includes(respuesta)) {
         estados[from] = "MENU_SERVICIOS";
@@ -1225,6 +1381,9 @@ async function startBot() {
       return;
     }
 
+    // ===============================
+    // SELECCIONAR DÍA
+    // ===============================
     if (estados[from] === "SELECCIONAR_DIA") {
       const indice = parseInt(respuesta) - 1;
       
@@ -1250,6 +1409,9 @@ async function startBot() {
       return;
     }
 
+    // ===============================
+    // SELECCIONAR HORA → CREAR CITA
+    // ===============================
     if (estados[from] === "SELECCIONAR_HORA") {
       const indice = parseInt(respuesta) - 1;
       
@@ -1261,18 +1423,13 @@ async function startBot() {
       }
 
       const horaSeleccionada = temp[from].horas[indice];
-      const COLOMBIA_OFFSET_HOURS = 5;
-
-      const inicioOriginal = new Date(horaSeleccionada.inicioISO);
-      inicioOriginal.setUTCHours(inicioOriginal.getUTCHours() + COLOMBIA_OFFSET_HOURS);
-      const inicioISO_Ajustado = inicioOriginal.toISOString();
 
       try {
         const eventId = await crearEvento({
           nombre: `${temp[from].nombre} (${temp[from].cedula})`,
           servicio: temp[from].servicio.nombre,
           empleado: temp[from].empleado.nombre,
-          inicioISO: inicioISO_Ajustado,
+          inicioISO: horaSeleccionada.inicioISO,
           duracionHoras: temp[from].servicio.duracion,
           telefono: temp[from].celular,
           cedula: temp[from].cedula,
@@ -1336,8 +1493,6 @@ async function startBot() {
         );
 
         const fechaCompleta = new Date(horaSeleccionada.inicioISO);
-
-        // Mensaje al cliente
         await sock.sendMessage(from, { 
           text: `🎉 *¡Cita ${temp[from].esCambio ? 'modificada' : 'confirmada'} exitosamente!* 🎉\n\n` +
                 `👤 *Cliente:* ${temp[from].nombre}\n` +
@@ -1352,30 +1507,28 @@ async function startBot() {
                 `Escribe 'MENU' para volver al menú principal.` 
         });
 
-        // Notificación al grupo - NUEVA o MODIFICADA
-        const esModificacion = temp[from].esCambio === true;
-
-        const mensajeGrupo = 
-          `${esModificacion ? '✏️' : '🔔'} *${esModificacion ? 'CITA MODIFICADA' : 'NUEVA CITA AGENDADA'}*\n\n` +
-          `👤 Cliente: ${temp[from].nombre} (${temp[from].cedula})\n` +
-          `💇‍♀️ Servicio: ${temp[from].servicio.nombre}\n` +
-          `👨‍💼 Estilista: ${temp[from].empleado.nombre}\n` +
-          `📅 Fecha: ${formatearFecha(fechaCompleta)}\n` +
-          `🕐 Hora: ${horaSeleccionada.label}\n` +
-          (esModificacion ? `🔄 *Modificación de cita anterior*\n` : ``) +
-          `\n¡${esModificacion ? 'Actualizar preparación' : 'Preparémonos'} para atender con excelencia! 💖`;
-
-        try {
-          await sock.sendMessage(GROUP_ID, { text: mensajeGrupo });
-          console.log(`Notificación ${esModificacion ? 'modificación' : 'nueva cita'} enviada al grupo`);
-        } catch (err) {
-          console.error("Error enviando notificación al grupo:", err);
-        }
-
-        if (esModificacion) {
+        if (temp[from].esCambio) {
           await sock.sendMessage(from, { 
             text: `✏️ *Cita actualizada correctamente.* Tu nueva cita ha reemplazado la anterior.\n\n¡Gracias por tu preferencia! 💖` 
           });
+        }
+
+        // ===============================
+        // NOTIFICAR AL GRUPO
+        // ===============================
+        const mensajeGrupo = `🔔 *Nueva cita agendada${temp[from].esCambio ? ' (modificada)' : ''}!*\n\n` +
+                             `👤 Cliente: ${temp[from].nombre} (${temp[from].cedula})\n` +
+                             `💇‍♀️ Servicio: ${temp[from].servicio.nombre}\n` +
+                             `👨‍💼 Estilista: ${temp[from].empleado.nombre}\n` +
+                             `📅 Fecha: ${formatearFecha(fechaCompleta)}\n` +
+                             `🕐 Hora: ${horaSeleccionada.label}\n\n` +
+                             `¡Preparémonos para atender con excelencia! 💖`;
+
+        try {
+          await sock.sendMessage(GROUP_ID, { text: mensajeGrupo });
+          console.log(`Notificación enviada al grupo: ${GROUP_ID}`);
+        } catch (err) {
+          console.error("Error enviando notificación al grupo:", err);
         }
 
         delete estados[from];
@@ -1391,6 +1544,9 @@ async function startBot() {
       return;
     }
 
+    // ===============================
+    // MENSAJE NO ENTENDIDO
+    // ===============================
     await sock.sendMessage(from, { 
       text: `❓ No entendí tu mensaje "${originalText}".\n\nPor favor:\n` +
             `• Responde según las instrucciones del mensaje anterior\n` +
@@ -1401,6 +1557,30 @@ async function startBot() {
   });
 
   console.log("🚀 Bot iniciado - esperando conexión...");
+}
+
+async function obtenerBloqueosFuturos() {
+  try {
+    const snapshot = await db.ref('clientes/-1').once('value');
+    if (!snapshot.exists()) return [];
+
+    const data = snapshot.val();
+    const citas = data.citas || [];
+
+    return citas
+      .filter(c => 
+        new Date(c.inicio) > new Date() && 
+        c.estado === "bloqueo"  // o c.servicio === "BLOQUEO"
+      )
+      .map(cita => ({
+        ...cita,
+        cedula: "-1"
+      }))
+      .sort((a, b) => new Date(a.inicio) - new Date(b.inicio));
+  } catch (err) {
+    console.error("Error obteniendo bloqueos:", err);
+    return [];
+  }
 }
 
 function getDescripcionServicio(nombre) {
@@ -1441,15 +1621,3 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("🌐 Servidor HTTP escuchando en puerto", PORT);
 });
-
-function calcularDuracionHoras(horaInicio, horaFin) {
-  const [h1, m1] = horaInicio.split(":").map(Number);
-  const [h2, m2] = horaFin.split(":").map(Number);
-  
-  const minTotal1 = h1 * 60 + m1;
-  const minTotal2 = h2 * 60 + m2;
-  
-  if (minTotal2 <= minTotal1) return null;
-  
-  return (minTotal2 - minTotal1) / 60;
-}
