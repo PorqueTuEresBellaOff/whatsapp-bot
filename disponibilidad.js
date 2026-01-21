@@ -14,28 +14,30 @@ function seCruza(aInicio, aFin, bInicio, bFin) {
 }
 
 export async function obtenerHorasDisponibles({
-  startDate = null,  // ← Nuevo: fecha de inicio específica (Date o null para default)
+  startDate = null,
   dias = 7,
   horaInicio = 8,
   horaFin = 18,
   duracionHoras = 2,
-  empleado  // ← obligatorio
+  empleado
 }) {
   if (!empleado) {
     throw new Error("El parámetro 'empleado' es obligatorio en obtenerHorasDisponibles");
   }
 
   const ahora = new Date();
-  const hoy = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate() + 1); // Hoy a medianoche
+  const hoyInicio = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate(), 0, 0, 0);
+  const hoyStr = hoyInicio.toDateString();
 
-  // Si startDate proporcionado, usarlo; sino, default a mañana
-  const inicioRango = startDate ? new Date(startDate) : new Date();
-  if (!startDate) {
-    inicioRango.setDate(inicioRango.getDate() + 1); // Default: mañana
+  // Nunca permitir startDate en el pasado o hoy
+  let inicioRango = startDate ? new Date(startDate) : new Date(ahora);
+  if (!startDate || inicioRango <= hoyInicio) {
+    inicioRango = new Date(hoyInicio);
+    inicioRango.setDate(inicioRango.getDate() + 1); // empezamos desde mañana
   }
 
   const finRango = new Date(inicioRango);
-  finRango.setDate(finRango.getDate() + dias + 1); // +1 para incluir el último día
+  finRango.setDate(finRango.getDate() + dias);
 
   const busy = await obtenerBusy(
     inicioRango.toISOString(),
@@ -45,13 +47,14 @@ export async function obtenerHorasDisponibles({
 
   const disponibles = [];
 
-  // Loop desde d=0 (incluye inicioRango)
   for (let d = 0; d < dias; d++) {
     const fecha = new Date(inicioRango);
     fecha.setDate(fecha.getDate() + d);
 
-    // Skip si es domingo o fecha pasada
-    if (fecha.getDay() === 0 || fecha < hoy) continue;
+    // Exclusión estricta
+    if (fecha < hoyInicio) continue;
+    if (fecha.toDateString() === hoyStr) continue;
+    if (fecha.getDay() === 0) continue; // domingos
 
     const slots = [];
     for (let h = horaInicio; h + duracionHoras <= horaFin; h++) {
@@ -91,7 +94,7 @@ export async function obtenerHorasDisponibles({
           day: "numeric",
           month: "long"
         }),
-        fechaISO: fecha.toISOString().split('T')[0],  // ← Agregado para parseo seguro
+        fechaISO: fecha.toISOString().split('T')[0],
         slots
       });
     }

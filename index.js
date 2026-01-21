@@ -475,7 +475,18 @@ async function startBot() {
         BLOCK_DATE:    'block_date',
         BLOCK_TYPE:    'block_type',     // todo el día o rango
         BLOCK_RANGE:   'block_range',    // pidiendo las dos horas
-        BLOCK_CONFIRM: 'block_confirm'
+        BLOCK_CONFIRM: 'block_confirm',
+        AGENDAR_START:      'agendar_start',
+        AGENDAR_CEDULA:     'agendar_cedula',
+        AGENDAR_SERVICIO:   'agendar_servicio',
+        AGENDAR_EMPLEADO:   'agendar_empleado',
+        AGENDAR_NOMBRE:     'agendar_nombre',
+        AGENDAR_CELULAR:    'agendar_celular',
+        AGENDAR_CONFIRMAR:  'agendar_confirmar',
+        AGENDAR_MES:        'agendar_mes',
+        AGENDAR_SEMANA:     'agendar_semana',
+        AGENDAR_DIA:        'agendar_dia',
+        AGENDAR_HORA:       'agendar_hora'
       };
       // ===============================
       // COMANDOS ADMIN (solo en el grupo)
@@ -511,14 +522,15 @@ async function startBot() {
           adminState[groupId].data = {};
           
           const menuText = 
-            `🛠️ *MENÚ ADMINISTRACIÓN – Porque Tú Eres Bella*\n\n` +
-            `¿Qué deseas hacer?\n\n` +
-            `1️⃣ Ver todas las citas futuras\n` +
-            `2️⃣ Cancelar una cita\n` +
-            `3️⃣ Bloquear agenda de estilista(s)\n` +
-            `4️⃣ Ayuda rápida\n\n` +
-            `Escribe solo el número (1-4)\n` +
-            `• Escribe MENU en cualquier momento para volver aquí`;
+                `🛠️ *MENÚ ADMINISTRACIÓN – Porque Tú Eres Bella*\n\n` +
+                `¿Qué deseas hacer?\n\n` +
+                `1️⃣ Ver todas las citas futuras\n` +
+                `2️⃣ Cancelar una cita\n` +
+                `3️⃣ Bloquear agenda de estilista(s)\n` +
+                `4️⃣ Agendar cita para una clienta\n` +   // ← NUEVA LÍNEA
+                `5️⃣ Ayuda rápida\n\n` +                   // ← Cambia 4 → 5
+                `Escribe solo el número (1-5)\n` +         // ← Cambia 1-4 → 1-5
+                `• Escribe MENU en cualquier momento para volver aquí`;
 
           await sendAdmin(menuText);
           return;
@@ -592,6 +604,32 @@ async function startBot() {
           }
 
           if (textUpper === '4') {
+            adminState[groupId].mode = ADMIN_MODES.AGENDAR_START;
+            adminState[groupId].data = {
+              cedula: null,
+              nombre: null,
+              celular: null,
+              servicio: null,
+              empleado: null,
+              temp: {},           // simula el temp del flujo cliente
+              mesesDisponibles: null,
+              semanasDelMes: null,
+              dias: null,
+              horas: null,
+              esNuevoCliente: null,
+              requiereDiagnostico: null
+            };
+
+            await sendAdmin(
+              `📅 *Modo agendamiento completo para clienta*\n\n` +
+              `Vamos a seguir **exactamente** el mismo proceso que una clienta.\n\n` +
+              `Paso 1 → Escribe la **cédula** de la clienta (solo números, ej: 123456789)\n\n` +
+              `Escribe MENU para salir en cualquier momento.`
+            );
+            return;
+          }
+
+          if (textUpper === '5') {
             await sendAdmin(
               `🆘 *AYUDA RÁPIDA ADMIN*\n\n` +
               `• Usa los números del menú principal\n` +
@@ -605,6 +643,430 @@ async function startBot() {
 
           // Respuesta inválida en modo main
           await sendAdmin("Por favor escribe solo el número de la opción (1,2,3,4)\nO MENU para refrescar el menú.");
+          return;
+        }
+
+        // ────────────────────────────────────────────────
+        //     FLUJO COMPLETO DE AGENDAMIENTO DESDE ADMIN
+        // ────────────────────────────────────────────────
+        if (currentMode.startsWith('agendar_') || currentMode === ADMIN_MODES.AGENDAR_START) {
+          const data = adminState[groupId].data;
+          const upper = text.toUpperCase().trim();
+
+          // ── ESCAPE ───────────────────────────────────────
+          if (["MENU", "INICIO", "VOLVER", "ATRAS", "0"].includes(upper)) {
+            adminState[groupId].mode = 'main';
+            adminState[groupId].data = {};
+            await sendAdmin("Modo agendamiento cancelado. Volviste al menú principal.");
+            return;
+          }
+
+          // ── AGENDAR_START → pedir cédula ─────────────────
+          if (currentMode === ADMIN_MODES.AGENDAR_START) {
+            if (!/^\d{5,}$/.test(text)) {
+              await sendAdmin("❗ Cédula inválida. Solo números (mínimo 5 dígitos).\nIntenta de nuevo.");
+              return;
+            }
+            data.cedula = text.trim();
+            adminState[groupId].mode = ADMIN_MODES.AGENDAR_SERVICIO;
+
+            const listaServicios = serviciosLista.map(s => 
+              `${s.id}️⃣ ${s.nombre} - ${formatearDuracion(s.duracion)}`
+            ).join('\n');
+
+            await sendAdmin(
+              `Cédula: ${data.cedula}\n\n` +
+              `Paso 2 → Selecciona el servicio:\n\n${listaServicios}\n\n` +
+              `Escribe el número (1-6)`
+            );
+            return;
+          }
+
+          // ── AGENDAR_SERVICIO ─────────────────────────────
+          if (currentMode === ADMIN_MODES.AGENDAR_SERVICIO) {
+            const sel = serviciosLista.find(s => s.id === text.trim());
+            if (!sel) {
+              await sendAdmin("Número de servicio inválido (1-6). Intenta de nuevo.");
+              return;
+            }
+            data.servicio = { nombre: sel.nombre, duracion: sel.duracion };
+            adminState[groupId].mode = ADMIN_MODES.AGENDAR_EMPLEADO;
+
+            const listaEmpleados = empleadosLista.map(e => 
+              `${e.id}️⃣ ${e.nombre}`
+            ).join('\n');
+
+            await sendAdmin(
+              `Servicio: ${data.servicio.nombre}\n\n` +
+              `Paso 3 → Elige estilista:\n\n${listaEmpleados}\n\n` +
+              `Escribe 1 o 2`
+            );
+            return;
+          }
+
+          // ── AGENDAR_EMPLEADO ─────────────────────────────
+          if (currentMode === ADMIN_MODES.AGENDAR_EMPLEADO) {
+            const sel = empleadosLista.find(e => e.id === text.trim());
+            if (!sel) {
+              await sendAdmin("Elige 1 (Carlos) o 2 (Arturo).");
+              return;
+            }
+            data.empleado = { nombre: sel.nombre };
+            adminState[groupId].mode = ADMIN_MODES.AGENDAR_CEDULA;  // ya tenemos cédula, pero verificamos cliente
+
+            // Verificamos si existe el cliente (igual que en flujo normal)
+            const clienteRef = db.ref(`clientes/${data.cedula}`);
+            const snap = await clienteRef.once('value');
+
+            if (snap.exists()) {
+              const cliente = snap.val();
+              data.nombre = cliente.nombre || "Cliente";
+              data.celular = cliente.celular || null;
+              data.temp.nombre = data.nombre;
+              data.temp.celular = data.celular;
+              data.temp.cedula = data.cedula;
+
+              // Chequeo diagnóstico pendiente
+              const hasPending = await tieneDiagnosticoPendiente(data.cedula);
+              if (hasPending && data.servicio.nombre !== "Diagnóstico") {
+                await sendAdmin(
+                  `⚠️ La clienta tiene diagnóstico pendiente.\n` +
+                  `Ajustamos el servicio a Diagnóstico.`
+                );
+                const diag = serviciosLista.find(s => s.id === '6');
+                data.servicio = { nombre: diag.nombre, duracion: diag.duracion };
+              }
+
+              adminState[groupId].mode = ADMIN_MODES.AGENDAR_CONFIRMAR;
+              await sendAdmin(
+                `Cliente encontrado:\n` +
+                `Nombre: ${data.nombre}\n` +
+                `Celular: ${data.celular || "sin registrar"}\n\n` +
+                `Servicio: ${data.servicio.nombre}\n` +
+                `Estilista: ${data.empleado.nombre}\n\n` +
+                `¿Continuamos? Escribe SI o NO para actualizar datos`
+              );
+            } else {
+              adminState[groupId].mode = ADMIN_MODES.AGENDAR_NOMBRE;
+              await sendAdmin(
+                `No existe registro con cédula ${data.cedula}.\n` +
+                `Paso 4 → Escribe el NOMBRE COMPLETO de la clienta:`
+              );
+            }
+            return;
+          }
+
+          // ── AGENDAR_NOMBRE (nueva clienta) ───────────────
+          if (currentMode === ADMIN_MODES.AGENDAR_NOMBRE) {
+            if (text.trim().length < 2) {
+              await sendAdmin("Nombre muy corto. Escribe nombre completo.");
+              return;
+            }
+            data.nombre = text.trim();
+            data.temp.nombre = data.nombre;
+            adminState[groupId].mode = ADMIN_MODES.AGENDAR_CELULAR;
+            await sendAdmin(
+              `Nombre: ${data.nombre}\n\n` +
+              `Paso 5 → Escribe el número de celular (10 dígitos, ej: 3001234567):`
+            );
+            return;
+          }
+
+          // ── AGENDAR_CELULAR ──────────────────────────────
+          if (currentMode === ADMIN_MODES.AGENDAR_CELULAR) {
+            if (!/^\d{10}$/.test(text.trim())) {
+              await sendAdmin("Celular inválido. 10 dígitos sin espacios ni signos.");
+              return;
+            }
+            data.celular = text.trim();
+            data.temp.celular = data.celular;
+
+            // Guardamos cliente nuevo (igual que flujo normal)
+            const clienteRef = db.ref(`clientes/${data.cedula}`);
+            await clienteRef.set({
+              nombre: data.nombre,
+              celular: data.celular,
+              citas: [],
+              requiereDiagnostico: data.servicio.nombre === "Diagnóstico"
+            });
+
+            adminState[groupId].mode = ADMIN_MODES.AGENDAR_CONFIRMAR;
+            await sendAdmin(
+              `Datos registrados:\n\n` +
+              `Cédula:   ${data.cedula}\n` +
+              `Nombre:   ${data.nombre}\n` +
+              `Celular:  ${data.celular}\n` +
+              `Servicio: ${data.servicio.nombre}\n` +
+              `Estilista:${data.empleado.nombre}\n\n` +
+              `Escribe SI para continuar a elegir fecha/hora`
+            );
+            return;
+          }
+
+          // ── AGENDAR_CONFIRMAR (cliente existente o nuevo) ─
+          if (currentMode === ADMIN_MODES.AGENDAR_CONFIRMAR) {
+            if (["SI", "SÍ"].includes(upper)) {
+              // Iniciamos selección de mes (igual que cliente)
+              const meses = obtenerMesesProximos(4);
+              data.mesesDisponibles = meses;
+
+              let texto = `📅 *Selecciona el mes*\n\n`;
+              meses.forEach(m => {
+                texto += `${m.indice + 1}️⃣ ${m.nombre.charAt(0).toUpperCase() + m.nombre.slice(1)}\n`;
+              });
+              texto += "\nEscribe el número del mes";
+
+              await sendAdmin(texto);
+              adminState[groupId].mode = ADMIN_MODES.AGENDAR_MES;
+              return;
+            } else if (["NO"].includes(upper)) {
+              adminState[groupId].mode = ADMIN_MODES.AGENDAR_NOMBRE;
+              await sendAdmin("Ok, volvamos a ingresar nombre y celular.\nEscribe el nombre completo:");
+              return;
+            }
+            await sendAdmin("Escribe SI o NO.");
+            return;
+          }
+
+          // ── AGENDAR_MES ──────────────────────────────────
+          if (currentMode === ADMIN_MODES.AGENDAR_MES) {
+            const idx = parseInt(text) - 1;
+            if (isNaN(idx) || idx < 0 || idx >= data.mesesDisponibles.length) {
+              await sendAdmin("Mes inválido. Elige 1 al 4.");
+              return;
+            }
+            const mesElegido = data.mesesDisponibles[idx];
+            data.mesSeleccionado = mesElegido;
+
+            // Aquí copiamos la lógica de semanas (es larga, pero igual que cliente)
+            const ahora = new Date();
+            const hoy = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate(), 0, 0, 0);
+            const primerDiaMes = new Date(mesElegido.year, mesElegido.mes, 1);
+            const ultimoDiaMes = new Date(mesElegido.year, mesElegido.mes + 1, 0);
+
+            let primerLunes = new Date(primerDiaMes);
+            while (primerLunes.getDay() !== 0 && primerLunes <= ultimoDiaMes) {
+              primerLunes.setDate(primerLunes.getDate() + 1);
+            }
+
+            const semanas = [];
+            let diaActual = new Date(primerLunes);
+            while (diaActual <= ultimoDiaMes) {
+              const inicioSemana = new Date(diaActual);
+              const finSemana = new Date(diaActual);
+              finSemana.setDate(finSemana.getDate() + 6);
+
+              const manana = new Date(hoy);
+              manana.setDate(manana.getDate() + 1);
+
+              if (finSemana >= manana) {
+                semanas.push({
+                  indice: semanas.length,
+                  inicio: inicioSemana,
+                  fin: finSemana,
+                  label: `Semana del ${inicioSemana.getDate()} al ${finSemana.getDate()} de ${inicioSemana.toLocaleDateString('es-CO', { month: 'long' })}`
+                });
+              }
+              diaActual.setDate(diaActual.getDate() + 7);
+            }
+
+            if (semanas.length === 0) {
+              await sendAdmin("No hay semanas disponibles en ese mes.\nElige otro mes.");
+              return;
+            }
+
+            data.semanasDelMes = semanas;
+
+            let texto = `📆 *Semanas en ${mesElegido.nombre}*\n\n`;
+            semanas.forEach(s => {
+              texto += `${s.indice + 1}️⃣ ${s.label}\n`;
+            });
+            texto += "\nEscribe el número de la semana";
+
+            await sendAdmin(texto);
+            adminState[groupId].mode = ADMIN_MODES.AGENDAR_SEMANA;
+            return;
+          }
+
+          // ── AGENDAR_SEMANA ───────────────────────────────
+          if (currentMode === ADMIN_MODES.AGENDAR_SEMANA) {
+            const idx = parseInt(text) - 1;
+            if (isNaN(idx) || idx < 0 || idx >= data.semanasDelMes.length) {
+              await sendAdmin("Semana inválida.");
+              return;
+            }
+            const semana = data.semanasDelMes[idx];
+            data.semanaSeleccionada = semana;
+
+            const disponibles = await obtenerHorasDisponibles({
+              startDate: semana.inicio,
+              dias: 7,
+              duracionHoras: data.servicio.duracion,
+              empleado: data.empleado.nombre
+            });
+
+            const diasEnSemana = disponibles.filter(dia => {
+              const f = new Date(dia.fechaISO);
+              return f >= semana.inicio && f <= semana.fin;
+            });
+
+            if (diasEnSemana.length === 0) {
+              await sendAdmin("No hay días disponibles en esa semana.\nElige otra.");
+              return;
+            }
+
+            data.dias = diasEnSemana;
+
+            let texto = `📅 *Días disponibles*\n\n`;
+            diasEnSemana.forEach((d, i) => {
+              texto += `${i + 1}️⃣ ${d.fecha} (${d.slots.length} horarios)\n`;
+            });
+            texto += "\nEscribe el número del día";
+
+            await sendAdmin(texto);
+            adminState[groupId].mode = ADMIN_MODES.AGENDAR_DIA;
+            return;
+          }
+
+          // ── AGENDAR_DIA ──────────────────────────────────
+          if (currentMode === ADMIN_MODES.AGENDAR_DIA) {
+            const idx = parseInt(text) - 1;
+            if (isNaN(idx) || idx < 0 || idx >= data.dias.length) {
+              await sendAdmin("Día inválido.");
+              return;
+            }
+            const dia = data.dias[idx];
+            data.horas = dia.slots;
+            data.diaSeleccionado = dia;
+
+            const opciones = dia.slots.map((h, i) => `${i + 1}️⃣ ${h.label}`).join('\n');
+
+            await sendAdmin(
+              `🕐 *Horarios para ${dia.fecha}*\n\n` +
+              `${opciones}\n\nEscribe el número del horario`
+            );
+            adminState[groupId].mode = ADMIN_MODES.AGENDAR_HORA;
+            return;
+          }
+
+          // ── AGENDAR_HORA → CREAR CITA ────────────────────
+          if (currentMode === ADMIN_MODES.AGENDAR_HORA) {
+            const idx = parseInt(text) - 1;
+            if (isNaN(idx) || idx < 0 || idx >= data.horas.length) {
+              await sendAdmin("Horario inválido.");
+              return;
+            }
+
+            const horaSel = data.horas[idx];
+
+            // Verificación final de disponibilidad
+            const disponible = await estaHoraDisponibleAhora({
+              empleado: data.empleado.nombre,
+              inicioISO: horaSel.inicioISO,
+              duracionHoras: data.servicio.duracion
+            });
+
+            if (!disponible) {
+              await sendAdmin(
+                `⛔ La hora ${horaSel.label} ya no está disponible.\n` +
+                `Vuelve a elegir día u horario.`
+              );
+              adminState[groupId].mode = ADMIN_MODES.AGENDAR_DIA;
+              return;
+            }
+
+            // ── Crear cita (igual que flujo cliente) ───────
+            try {
+              const eventId = await crearEvento({
+                nombre: `${data.nombre} (${data.cedula})`,
+                servicio: data.servicio.nombre,
+                empleado: data.empleado.nombre,
+                inicioISO: horaSel.inicioISO,
+                duracionHoras: data.servicio.duracion,
+                telefono: data.celular,
+                cedula: data.cedula,
+                esCambio: false
+              });
+
+              const citaData = {
+                nombre: data.nombre,
+                cedula: data.cedula,
+                servicio: data.servicio.nombre,
+                empleado: data.empleado.nombre,
+                inicio: horaSel.inicioISO,
+                fechaCreacion: new Date().toISOString(),
+                estado: "confirmada",
+                eventId,
+                recordatorioEnviado: false
+              };
+
+              const clienteRef = db.ref(`clientes/${data.cedula}`);
+              await clienteRef.transaction(current => {
+                // Si el nodo no existe → current === null
+                if (current === null) {
+                  current = {
+                    nombre: data.nombre,
+                    celular: data.celular,
+                    citas: [],
+                    requiereDiagnostico: false   // o true si es diagnóstico, pero ya lo manejas después
+                  };
+                }
+
+                // Aseguramos que citas sea un array (por si está corrupto o mal formado)
+                if (!Array.isArray(current.citas)) {
+                  current.citas = [];
+                }
+
+                current.citas.push(citaData);
+                return current;
+              });
+
+              if (data.servicio.nombre === "Diagnóstico") {
+                await clienteRef.update({ requiereDiagnostico: false });
+              }
+
+              const fechaCita = new Date(horaSel.inicioISO);
+              await sendAdmin(
+                `🎉 *Cita creada exitosamente desde admin!*\n\n` +
+                `Cliente: ${data.nombre} (${data.cedula})\n` +
+                `Celular: ${data.celular}\n` +
+                `Servicio: ${data.servicio.nombre}\n` +
+                `Estilista: ${data.empleado.nombre}\n` +
+                `Fecha: ${formatearFecha(fechaCita)}\n` +
+                `Hora: ${horaSel.label}\n\n` +
+                `Recordatorio programado para la clienta.`
+              );
+
+              // Notificación al grupo (ya lo hace programarRecordatorio, pero reforzamos)
+              const msgGrupo = `🔔 *Cita agendada desde admin*\n\n` +
+                              `Cliente: ${data.nombre} (${data.cedula})\n` +
+                              `Servicio: ${data.servicio.nombre}\n` +
+                              `Estilista: ${data.empleado.nombre}\n` +
+                              `Fecha: ${formatearFecha(fechaCita)} ${fechaCita.toLocaleTimeString("es-CO", {hour:'2-digit', minute:'2-digit'})}\n\n` +
+                              `¡Preparar todo! ✨`;
+              await sock.sendMessage(GROUP_ID, { text: msgGrupo });
+
+              // Programar recordatorio a clienta
+              const numeroCliente = `57${data.celular}@s.whatsapp.net`;
+              programarRecordatorio(sock, numeroCliente, citaData, {
+                nombre: data.nombre,
+                cedula: data.cedula,
+                celular: data.celular
+              });
+
+              // Limpiar estado
+              adminState[groupId].mode = 'main';
+              adminState[groupId].data = {};
+            } catch (err) {
+              console.error("Error creando cita desde admin:", err);
+              await sendAdmin("❌ Error al crear la cita. Revisa logs.");
+            }
+            return;
+          }
+
+          // Si llegó aquí y no manejó → error genérico
+          await sendAdmin("Modo no reconocido en agendamiento. Escribe MENU para salir.");
+          adminState[groupId].mode = 'main';
           return;
         }
 
@@ -955,12 +1417,12 @@ async function startBot() {
       }
 
       // ===============================
-      // INICIO - MENSAJE DE BIENV  ENIDA
+      // INICIO - MENSAJE DE BIENVENIDA
       // ===============================
       if (!conv.estado) {
         conv.estado = "INICIO";
         await sock.sendMessage(from, { 
-          text: `¡Hola! 💖 Bienvenido/a a *Porque Tú Eres Bella* ✨\n\nSomos tu salón de belleza favorito. ¿En qué podemos ayudarte hoy?\n\n*Opciones disponibles:*\n1️⃣ Agendar cita\n2️⃣ Consultar cita existente\n3️⃣ Información de servicios\n\nEscribe el número de la opción (ej: 1) \n\n Recuerda que estamos ubicados en la Carrera 19 # 70A - 31 edificio alexandra 301, Barrios Unidos, Chapinero centrar, Bogotá D.C.` 
+          text: `¡Hola! 💖 Bienvenido/a a *Porque Tú Eres Bella* ✨\n\nSomos tu salón de belleza favorito. ¿En qué podemos ayudarte hoy?\n\n*Opciones disponibles:*\n1️⃣ Agendar cita\n2️⃣ Consultar cita existente\n3️⃣ Información de servicios\n\nEscribe el número de la opción (ej: 1) \n\n Recuerda que estamos ubicados en la Carrera 19 # 70A - 31 edificio alexandra 301, Barrios Unidos, Chapinero centrar, Bogotá D.C. \n\n Si tienes dudas para agendar la cita, puedes llamar a este mismo numero y un asesor humano lo hará por ti` 
         });
         return;
       }
@@ -980,7 +1442,7 @@ async function startBot() {
                 `Escribe el número de la opción (ej: 1)\n\n` +
                 `💡 *Comandos útiles:*\n` +
                 `• Escribe 'MENU' en cualquier momento para volver aquí\n` +
-                `• Escribe 'AYUDA' si necesitas asistencia` 
+                `• Escribe 'AYUDA' si necesitas asistencia \n\n Recuerda que estamos ubicados en la Carrera 19 # 70A - 31 edificio alexandra 301, Barrios Unidos, Chapinero centrar, Bogotá D.C. \n\n Si tienes dudas para agendar la cita, puedes llamar a este mismo numero y un asesor humano lo hará por ti` 
         });
         return;
       }
@@ -1021,7 +1483,7 @@ async function startBot() {
         }
 
         await sock.sendMessage(from, { 
-          text: `❓ No entendí tu respuesta. Por favor elige una opción:\n\n1️⃣ Agendar nueva cita\n2️⃣ Consultar cita existente\n3️⃣ Información de servicios\n\nEscribe el número (ej: 1) o 'MENU' para ver el menú.` 
+          text: `❓ No entendí tu respuesta. Por favor elige una opción:\n\n1️⃣ Agendar nueva cita\n2️⃣ Consultar cita existente\n3️⃣ Información de servicios\n\nEscribe el número (ej: 1) o 'MENU' para ver el menú. \n\n Si tienes dudas para agendar la cita, puedes llamar a este mismo numero y un asesor humano lo hará por ti` 
         });
         return;
       }
@@ -1515,40 +1977,46 @@ async function startBot() {
         const mesElegido = conv.temp.mesesDisponibles[idx];
         conv.temp.mesSeleccionado = mesElegido;
 
-        // Generamos las semanas del mes, pero filtramos semanas pasadas si es mes actual
         const ahora = new Date();
-        const hoy = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate());
+        const hoy = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate(), 0, 0, 0);
+
         const primerDiaMes = new Date(mesElegido.year, mesElegido.mes, 1);
         const ultimoDiaMes = new Date(mesElegido.year, mesElegido.mes + 1, 0);
 
-        const semanas = [];
-        let diaActual = new Date(primerDiaMes);
-        
-        // Alinear al lunes anterior o igual al 1
-        while (diaActual.getDay() !== 1) {
-          diaActual.setDate(diaActual.getDate() - 1);
+        // Primer lunes del mes o posterior
+        let primerLunes = new Date(primerDiaMes);
+        while (primerLunes.getDay() !== 0 && primerLunes <= ultimoDiaMes) {
+          primerLunes.setDate(primerLunes.getDate() + 1);
         }
+
+        const semanas = [];
+        let diaActual = new Date(primerLunes);
 
         while (diaActual <= ultimoDiaMes) {
           const inicioSemana = new Date(diaActual);
           const finSemana = new Date(diaActual);
           finSemana.setDate(finSemana.getDate() + 6);
 
-          // Solo agregar si la semana toca el mes y no es pasada
-          if (inicioSemana <= ultimoDiaMes && finSemana >= primerDiaMes && finSemana >= hoy) {
+          // CAMBIO IMPORTANTE: incluir la semana si tiene AL MENOS UN DÍA >= mañana
+          const manana = new Date(hoy);
+          manana.setDate(manana.getDate() + 1);
+
+          if (finSemana >= manana) {
             semanas.push({
               indice: semanas.length,
               inicio: inicioSemana,
               fin: finSemana,
-              label: `Semana del ${inicioSemana.getDate()} al ${Math.min(finSemana.getDate(), ultimoDiaMes.getDate())}`
+              label: `Semana del ${inicioSemana.getDate()} al ${finSemana.getDate()} de ${inicioSemana.toLocaleDateString('es-CO', { month: 'long' })}`
             });
           }
-          
+
           diaActual.setDate(diaActual.getDate() + 7);
         }
 
         if (semanas.length === 0) {
-          await sock.sendMessage(from, { text: "😔 No hay semanas disponibles en ese mes (pueden ser pasadas).\nElige otro mes o escribe MENU." });
+          await sock.sendMessage(from, { 
+            text: "😔 No hay semanas con días disponibles en ese mes.\nElige otro mes o escribe MENU." 
+          });
           return;
         }
 
@@ -1794,7 +2262,8 @@ async function startBot() {
                   `📲 Recibirás un recordatorio 2 horas antes de tu cita.\n\n` +
                   `💖 *¡Te esperamos con mucho cariño en Porque Tú Eres Bella!*\n\n` +
                   `Si necesitas cambiar o cancelar tu cita, escribe '2️⃣' en el menú principal para consultar.\n\n` +
-                  `Escribe 'MENU' para volver al menú principal.` 
+                  `Escribe 'MENU' para volver al menú principal.\n\n` + 
+                  'Recuerda que estamos ubicados en la Carrera 19 # 70A - 31 edificio alexandra 301, Barrios Unidos, Chapinero centrar, Bogotá D.C.'
           });
 
           if (conv.temp.esCambio) {
