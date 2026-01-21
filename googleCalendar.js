@@ -13,8 +13,8 @@ const calendar = google.calendar({
 
 // ¡Calendarios separados por empleado!
 const CALENDARS_BY_EMPLEADO = {
-  "Carlos":  "57a7566fe4630dcdec998aba92b2e604bd75ae4a90cfbaad79cf3bb82d2fcacf@group.calendar.google.com", // ← TU ID REAL
-  "Arturo":  "25bdad0375a183e752e99b772c8a9fd9d85f326818bfcd15483fe92b0a95cfd3@group.calendar.google.com", // ← TU ID REAL
+  "Carlos":  "21adc861b9a57704f51296e04d0a23d6110d0aac9274586087282173eef92e23@group.calendar.google.com", // ← TU ID REAL
+  "Arturo":  "567580a874aa3a34e317086a7e2367e612723dcf0300991a9dd9169c8deb9b0a@group.calendar.google.com", // ← TU ID REAL
 };
 
 function getCalendarId(empleadoNombre) {

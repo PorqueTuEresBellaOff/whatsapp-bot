@@ -1,3 +1,12 @@
+// disponibilidad.js (versión modificada)
+// Cambios principales:
+// 1. En obtenerHorasDisponibles: 
+//    - Acepta nuevo parámetro opcional 'startDate' (Date) para comenzar desde una fecha específica.
+//    - En el loop, usa 'd = 0' si startDate es proporcionado (incluye el startDate si es futuro).
+//    - Agrega 'fechaISO' en cada disponible para parseo seguro.
+//    - Filtra días pasados: si la fecha es anterior a hoy, skip.
+// 2. No se cambia estaHoraDisponibleAhora, ya que no afecta.
+
 import { obtenerBusy } from "./googleCalendar.js";
 
 function seCruza(aInicio, aFin, bInicio, bFin) {
@@ -5,36 +14,46 @@ function seCruza(aInicio, aFin, bInicio, bFin) {
 }
 
 export async function obtenerHorasDisponibles({
+  startDate = null,  // ← Nuevo: fecha de inicio específica (Date o null para default)
   dias = 7,
   horaInicio = 8,
   horaFin = 18,
   duracionHoras = 2,
-  empleado                      // ← parámetro obligatorio ahora
+  empleado  // ← obligatorio
 }) {
   if (!empleado) {
     throw new Error("El parámetro 'empleado' es obligatorio en obtenerHorasDisponibles");
   }
 
   const ahora = new Date();
-  const finRango = new Date();
-  finRango.setDate(finRango.getDate() + dias + 1);
+  const hoy = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate() + 1); // Hoy a medianoche
+
+  // Si startDate proporcionado, usarlo; sino, default a mañana
+  const inicioRango = startDate ? new Date(startDate) : new Date();
+  if (!startDate) {
+    inicioRango.setDate(inicioRango.getDate() + 1); // Default: mañana
+  }
+
+  const finRango = new Date(inicioRango);
+  finRango.setDate(finRango.getDate() + dias + 1); // +1 para incluir el último día
 
   const busy = await obtenerBusy(
-    ahora.toISOString(),
+    inicioRango.toISOString(),
     finRango.toISOString(),
     empleado
   );
 
   const disponibles = [];
 
-  for (let d = 1; d <= dias; d++) {
-    const fecha = new Date();
+  // Loop desde d=0 (incluye inicioRango)
+  for (let d = 0; d < dias; d++) {
+    const fecha = new Date(inicioRango);
     fecha.setDate(fecha.getDate() + d);
 
-    if (fecha.getDay() === 0) continue; // domingo no
+    // Skip si es domingo o fecha pasada
+    if (fecha.getDay() === 0 || fecha < hoy) continue;
 
     const slots = [];
-
     for (let h = horaInicio; h + duracionHoras <= horaFin; h++) {
       const inicio = new Date(fecha);
       inicio.setHours(h, 0, 0, 0);
@@ -58,7 +77,6 @@ export async function obtenerHorasDisponibles({
             hour: "numeric",
             minute: "2-digit"
           });
-
         slots.push({
           inicioISO: inicio.toISOString(),
           label: `${formato(inicio)} - ${formato(fin)}`
@@ -73,6 +91,7 @@ export async function obtenerHorasDisponibles({
           day: "numeric",
           month: "long"
         }),
+        fechaISO: fecha.toISOString().split('T')[0],  // ← Agregado para parseo seguro
         slots
       });
     }
@@ -84,10 +103,10 @@ export async function obtenerHorasDisponibles({
 /**
  * Verifica SI UN SLOT CONCRETO sigue disponible en este momento exacto
  * (consulta freebusy solo para el intervalo de esa cita)
- * 
+ *
  * @param {Object} params
  * @param {string} params.empleado
- * @param {string} params.inicioISO  formato ISO
+ * @param {string} params.inicioISO formato ISO
  * @param {number} params.duracionHoras
  * @returns {Promise<boolean>} true = disponible, false = ocupado o error
  */

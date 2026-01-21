@@ -129,25 +129,29 @@ function programarRecordatorio(sock, numeroCompletoCliente, cita, clienteData) {
     console.warn("Intento de programar recordatorio con cita inválida:", cita);
     return null;
   }
-  
+ 
   const key = cita.eventId;
-  
+ 
   const fechaCita = new Date(cita.inicio);
   const ahora = new Date();
-
   if (fechaCita <= ahora) return null;
   if (cita.recordatorioEnviado === true) return null;
+
+  // Rechazar si la cita está a más de 20 días en el futuro
+  const maxDelayDias = 20;
+  const maxDelayMs = maxDelayDias * 24 * 60 * 60 * 1000;
+  if (fechaCita.getTime() - ahora.getTime() > maxDelayMs) {
+    console.log(`Recordatorio rechazado para cita en más de ${maxDelayDias} días: ${key}`);
+    return null;
+  }
 
   // ── 2 horas antes ────────────────────────────────
   const dosHorasAntes = new Date(fechaCita.getTime() - 2 * 60 * 60 * 1000);
   const faltanMenosDe2Horas = ahora >= dosHorasAntes;
-
-  const delay = faltanMenosDe2Horas 
-    ? 30000  // ~30 segundos si ya está muy cerca
+  const delay = faltanMenosDe2Horas
+    ? 30000 // ~30 segundos si ya está muy cerca
     : dosHorasAntes.getTime() - ahora.getTime();
-
   if (delay <= 0) return null;
-
   const timeoutId = setTimeout(async () => {
     try {
       const fechaHoraCita = fechaCita.toLocaleString("es-CO", {
@@ -159,10 +163,8 @@ function programarRecordatorio(sock, numeroCompletoCliente, cita, clienteData) {
         minute: '2-digit',
         hour12: true
       });
-
       // 1. Mensaje al CLIENTE
       let mensajeCliente = "";
-
       if (faltanMenosDe2Horas) {
         mensajeCliente = `🚨 ¡ATENCIÓN! Tu cita es **HOY** en menos de 2 horas!\n\n` +
                         `💇‍♀️ *${cita.servicio}* con ${cita.empleado}\n` +
@@ -174,12 +176,10 @@ function programarRecordatorio(sock, numeroCompletoCliente, cita, clienteData) {
                         `💇‍♀️ *${cita.servicio}* con ${cita.empleado}\n` +
                         `📅 ${formatearFecha(fechaCita)}\n` +
                         `🕐 ${fechaCita.toLocaleTimeString("es-CO", { hour: '2-digit', minute: '2-digit', hour12: true })}\n\n` +
-                        `¡Te esperamos! 💖 \n\n` + 
+                        `¡Te esperamos! 💖 \n\n` +
                         'Si deseas cancelarla puedes entrar a la seccion "Consultar cita" ezcribiendo "MENU" y luego "2"';
       }
-
       await sock.sendMessage(numeroCompletoCliente, { text: mensajeCliente });
-
       // 2. Mensaje al GRUPO DE ADMINS
       const mensajeGrupo = `🔔 *RECORDATORIO 2 HORAS* - Cita próxima\n\n` +
                           `👤 ${clienteData.nombre || 'Cliente'} (${clienteData.cedula})\n` +
@@ -189,9 +189,7 @@ function programarRecordatorio(sock, numeroCompletoCliente, cita, clienteData) {
                           `📅 ${formatearFecha(fechaCita)}\n` +
                           `🕐 ${fechaCita.toLocaleTimeString("es-CO", { hour: '2-digit', minute: '2-digit', hour12: true })}\n\n` +
                           `¡Preparar estación y recibir al cliente! ✨`;
-
       await sock.sendMessage(GROUP_ID, { text: mensajeGrupo });
-
       // Marcar como enviado (importante para no repetir)
       const clienteRef = db.ref(`clientes/${clienteData.cedula}`);
       await clienteRef.transaction(current => {
@@ -201,17 +199,14 @@ function programarRecordatorio(sock, numeroCompletoCliente, cita, clienteData) {
         current.citas[idx].recordatorioEnviado = true;
         return current;
       });
-
       console.log(`Recordatorios enviados (cliente + grupo) → ${clienteData.cedula} - ${cita.servicio}`);
-
       delete recordatoriosActivos[key];
-
     } catch (err) {
       console.error("Error enviando recordatorios (cliente/grupo):", err);
       delete recordatoriosActivos[key];
     }
   }, delay);
-  
+ 
   recordatoriosActivos[key] = timeoutId;
   return timeoutId;
 }
@@ -343,35 +338,31 @@ async function requiereDiagnostico(cedula) {
 
 async function reprogramarRecordatoriosPendientes(sock) {
   console.log("🔄 Reprogramando recordatorios pendientes...");
-
   try {
     const clientesSnap = await db.ref('clientes').once('value');
     if (!clientesSnap.exists()) return;
-
     let programados = 0;
-
     clientesSnap.forEach((clienteSnap) => {
       const cliente = clienteSnap.val();
       const cedula = clienteSnap.key;
       const citas = cliente.citas || [];
-
       citas.forEach(cita => {
         if (cita.estado !== "confirmada") return;
         if (new Date(cita.inicio) <= new Date()) return;
         if (cita.recordatorioEnviado === true) return;
         if (!cliente.celular) return;
         if (!cita.eventId) return;
-
         const numeroCompleto = `57${cliente.celular}@s.whatsapp.net`;
-
         programarRecordatorio(sock, numeroCompleto, cita, { ...cliente, cedula });
         programados++;
       });
     });
-
     console.log(`Se programaron ${programados} recordatorios pendientes.`);
   } catch (err) {
     console.error("Error reprogramando recordatorios:", err);
+  } finally {
+    // Llamada recursiva cada 24 horas
+    setTimeout(() => reprogramarRecordatoriosPendientes(sock), 24 * 60 * 60 * 1000);
   }
 }
 
@@ -1483,38 +1474,23 @@ async function startBot() {
 
         if (["SI", "SÍ"].includes(respuesta)) {
           try {
-            await sock.sendMessage(from, { 
-              text: `⏳ Buscando horarios disponibles para ${conv.temp.servicio.nombre} con ${conv.temp.empleado.nombre}...\n\nEsto puede tomar unos segundos.\n\nEscribe 'MENU' para cancelar.` 
+            const meses = obtenerMesesProximos(4);
+    
+            let texto = `📅 *Selecciona el mes* para tu cita de ${conv.temp.servicio.nombre}\n\n`;
+            meses.forEach(m => {
+              texto += `${m.indice + 1}️⃣ ${m.nombre.charAt(0).toUpperCase() + m.nombre.slice(1)}\n`;
             });
+            
+            texto += "\nEscribe el número del mes (ej: 1)\nEscribe 'MENU' para volver.";
+            
+            await sock.sendMessage(from, { text: texto });
+            conv.estado = "SELECCIONAR_MES";
+            conv.temp.mesesDisponibles = meses;
 
-            const disponibles = await obtenerHorasDisponibles({
-              dias: 7,
-              duracionHoras: conv.temp.servicio.duracion,
-              empleado: conv.temp.empleado.nombre
-            });
-
-            if (disponibles.length === 0) {
-              await sock.sendMessage(from, { 
-                text: `😔 Lo sentimos, no hay horarios disponibles para ${conv.temp.servicio.nombre} en los próximos 7 días (a partir de mañana).\n\nTe recomendamos:\n• Intentar con otro servicio\n• Consultar en unos días\n• Llamar directamente al salón\n\nEscribe 'MENU' para volver al menú principal.` 
-              });
-              conv.estado = "INICIO";
-              return;
-            }
-
-            conv.temp.dias = disponibles;
-            conv.estado = "SELECCIONAR_DIA";
-
-            const opcionesDias = disponibles.map((d, i) => 
-              `${i + 1}️⃣ ${d.fecha} (${d.slots.length} horarios disponibles)`
-            ).join('\n');
-
-            await sock.sendMessage(from, { 
-              text: `📅 *Días Disponibles*\n\nSelecciona el día para tu cita de ${conv.temp.servicio.nombre}:\n\n${opcionesDias}\n\nEscribe el número del día (ej: 1)\n\nEscribe 'MENU' para volver.` 
-            });
           } catch (error) {
-            console.error("Error obteniendo horarios:", error);
+            console.error("Error obteniendo meses:", error);
             await sock.sendMessage(from, { 
-              text: `❌ Ocurrió un error al buscar horarios disponibles. Por favor intenta nuevamente.\n\nEscribe 'MENU' para volver al menú principal.` 
+              text: `❌ Ocurrió un error al buscar los siguientes meses disponibles. Por favor intenta nuevamente.\n\nEscribe 'MENU' para volver al menú principal.` 
             });
             conv.estado = "INICIO";
           }
@@ -1524,6 +1500,124 @@ async function startBot() {
         await sock.sendMessage(from, { 
           text: "❓ Por favor, escribe 'SI', 'NO' o 'MENU'." 
         });
+        return;
+      }
+
+      if (conv.estado === "SELECCIONAR_MES") {
+        const idx = parseInt(respuesta) - 1;
+        if (isNaN(idx) || idx < 0 || idx >= conv.temp.mesesDisponibles.length) {
+          await sock.sendMessage(from, { text: "Número de mes inválido. Elige entre 1 y 4.\nEscribe MENU para volver." });
+          return;
+        }
+
+        const mesElegido = conv.temp.mesesDisponibles[idx];
+        conv.temp.mesSeleccionado = mesElegido;
+
+        // Generamos las semanas del mes, pero filtramos semanas pasadas si es mes actual
+        const ahora = new Date();
+        const hoy = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate());
+        const primerDiaMes = new Date(mesElegido.year, mesElegido.mes, 1);
+        const ultimoDiaMes = new Date(mesElegido.year, mesElegido.mes + 1, 0);
+
+        const semanas = [];
+        let diaActual = new Date(primerDiaMes);
+        
+        // Alinear al lunes anterior o igual al 1
+        while (diaActual.getDay() !== 1) {
+          diaActual.setDate(diaActual.getDate() - 1);
+        }
+
+        while (diaActual <= ultimoDiaMes) {
+          const inicioSemana = new Date(diaActual);
+          const finSemana = new Date(diaActual);
+          finSemana.setDate(finSemana.getDate() + 6);
+
+          // Solo agregar si la semana toca el mes y no es pasada
+          if (inicioSemana <= ultimoDiaMes && finSemana >= primerDiaMes && finSemana >= hoy) {
+            semanas.push({
+              indice: semanas.length,
+              inicio: inicioSemana,
+              fin: finSemana,
+              label: `Semana del ${inicioSemana.getDate()} al ${Math.min(finSemana.getDate(), ultimoDiaMes.getDate())}`
+            });
+          }
+          
+          diaActual.setDate(diaActual.getDate() + 7);
+        }
+
+        if (semanas.length === 0) {
+          await sock.sendMessage(from, { text: "😔 No hay semanas disponibles en ese mes (pueden ser pasadas).\nElige otro mes o escribe MENU." });
+          return;
+        }
+
+        conv.temp.semanasDelMes = semanas;
+
+        let texto = `📆 *Semanas disponibles en ${mesElegido.nombre}*\n\n`;
+        semanas.forEach(s => {
+          texto += `${s.indice + 1}️⃣ ${s.label}\n`;
+        });
+
+        texto += "\nEscribe el número de la semana (ej: 1)\nEscribe 'MENU' para volver o 'ATRAS' para cambiar mes.";
+
+        await sock.sendMessage(from, { text: texto });
+        conv.estado = "SELECCIONAR_SEMANA";
+        return;
+      }
+
+      if (conv.estado === "SELECCIONAR_SEMANA") {
+        if (["ATRAS", "VOLVER"].includes(respuesta.toUpperCase())) {
+          // Volver a meses
+          const meses = obtenerMesesProximos(4);
+          let texto = `📅 *Selecciona el mes*\n\n`;
+          meses.forEach(m => texto += `${m.indice + 1}️⃣ ${m.nombre.charAt(0).toUpperCase() + m.nombre.slice(1)}\n`);
+          texto += "\nEscribe el número del mes";
+          await sock.sendMessage(from, { text: texto });
+          conv.estado = "SELECCIONAR_MES";
+          conv.temp.mesesDisponibles = meses;
+          return;
+        }
+
+        const idx = parseInt(respuesta) - 1;
+        if (isNaN(idx) || idx < 0 || idx >= conv.temp.semanasDelMes.length) {
+          await sock.sendMessage(from, { text: "Número de semana inválido.\nEscribe MENU o ATRAS." });
+          return;
+        }
+
+        const semanaElegida = conv.temp.semanasDelMes[idx];
+        conv.temp.semanaSeleccionada = semanaElegida;
+
+        // Llamamos a obtenerHorasDisponibles con startDate para el rango exacto
+        const disponiblesSemana = await obtenerHorasDisponibles({
+          startDate: semanaElegida.inicio,
+          dias: 7,
+          duracionHoras: conv.temp.servicio.duracion,
+          empleado: conv.temp.empleado.nombre
+        });
+
+        // Filtramos días dentro de la semana (seguridad adicional)
+        const diasEnSemana = disponiblesSemana.filter(dia => {
+          const fechaDia = new Date(dia.fechaISO);
+          return fechaDia >= semanaElegida.inicio && fechaDia <= semanaElegida.fin;
+        });
+
+        if (diasEnSemana.length === 0) {
+          await sock.sendMessage(from, { 
+            text: "😔 No hay días con horarios disponibles en esa semana.\nPor favor elige otra semana o escribe MENU." 
+          });
+          return;
+        }
+
+        conv.temp.dias = diasEnSemana;
+        conv.estado = "SELECCIONAR_DIA";
+
+        let texto = `📅 *Días disponibles en la semana seleccionada*\n\n`;
+        diasEnSemana.forEach((d, i) => {
+          texto += `${i + 1}️⃣ ${d.fecha} (${d.slots.length} horarios)\n`;
+        });
+
+        texto += "\nEscribe el número del día";
+
+        await sock.sendMessage(from, { text: texto });
         return;
       }
 
@@ -1582,7 +1676,6 @@ async function startBot() {
                 text: `⛔ Lo sentimos mucho, la hora *${horaSeleccionada.label}* del ${conv.temp.diaSeleccionado.fecha} ya fue tomada por otra persona mientras elegías.\n\nVamos a buscar otros horarios disponibles ahora mismo...\n\n(estamos consultando en tiempo real)`
             });
 
-            // ← Aquí lo devolvemos directamente a seleccionar día (con datos frescos)
             try {
                 const disponibles = await obtenerHorasDisponibles({
                     dias: 7,
@@ -1785,6 +1878,23 @@ startBot().catch(err => {
   setTimeout(startBot, 5000);
 });
 
+function obtenerMesesProximos(cantidad = 4) {
+  const meses = [];
+  const ahora = new Date();
+
+  for (let i = 0; i < cantidad; i++) {
+    const fecha = new Date(ahora);
+    fecha.setMonth(ahora.getMonth() + i);
+
+    meses.push({
+      indice: i,
+      nombre: fecha.toLocaleDateString("es-CO", { month: "long", year: "numeric" }),
+      mes: fecha.getMonth(),
+      year: fecha.getFullYear()
+    });
+  }
+  return meses;
+}
 // ===============================
 // SERVIDOR HTTP (para Render / UptimeRobot)
 // ===============================
