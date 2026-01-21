@@ -80,3 +80,54 @@ export async function obtenerHorasDisponibles({
 
   return disponibles;
 }
+
+/**
+ * Verifica SI UN SLOT CONCRETO sigue disponible en este momento exacto
+ * (consulta freebusy solo para el intervalo de esa cita)
+ * 
+ * @param {Object} params
+ * @param {string} params.empleado
+ * @param {string} params.inicioISO  formato ISO
+ * @param {number} params.duracionHoras
+ * @returns {Promise<boolean>} true = disponible, false = ocupado o error
+ */
+export async function estaHoraDisponibleAhora({ empleado, inicioISO, duracionHoras }) {
+  if (!empleado || !inicioISO || typeof duracionHoras !== 'number') {
+    console.warn("estaHoraDisponibleAhora → parámetros incompletos", { empleado, inicioISO, duracionHoras });
+    return false;
+  }
+
+  try {
+    const inicio = new Date(inicioISO);
+    if (isNaN(inicio.getTime())) {
+      console.warn("estaHoraDisponibleAhora → fecha inválida:", inicioISO);
+      return false;
+    }
+
+    const fin = new Date(inicio.getTime() + duracionHoras * 60 * 60 * 1000);
+
+    // Consulta freebusy SOLO para este rango exacto
+    const busyIntervals = await obtenerBusy(
+      inicio.toISOString(),
+      fin.toISOString(),
+      empleado
+    );
+
+    // Si hay cualquier cruce → ocupado
+    const ocupado = busyIntervals.some(b =>
+      seCruza(
+        inicio,
+        fin,
+        new Date(b.start),
+        new Date(b.end)
+      )
+    );
+
+    return !ocupado;
+
+  } catch (err) {
+    console.error("Error verificando disponibilidad puntual:", err);
+    // Política conservadora: error → tratamos como NO disponible
+    return false;
+  }
+}
