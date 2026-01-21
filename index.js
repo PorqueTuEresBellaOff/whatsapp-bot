@@ -170,14 +170,16 @@ function programarRecordatorio(sock, numeroCompletoCliente, cita, clienteData) {
                         `💇‍♀️ *${cita.servicio}* con ${cita.empleado}\n` +
                         `🕐 ${fechaCita.toLocaleTimeString("es-CO", { hour: '2-digit', minute: '2-digit', hour12: true })}\n\n` +
                         `¡Por favor ven con tiempo! Te esperamos con cariño 💖 \n\n` +
-                        'Si deseas cancelarla puedes entrar a la seccion "Consultar cita" ezcribiendo "MENU" y luego "2"';
+                        'Si deseas cancelarla puedes entrar a la seccion "Consultar cita" ezcribiendo "MENU" y luego "2" \n\n' +
+                        'Recuerda que estamos ubicados en la Carrera 19 # 70A - 31 edificio alexandra 301, Barrios Unidos, Chapinero centrar, Bogotá D.C.';
       } else {
         mensajeCliente = `⏰ *Recordatorio de cita* (2 horas antes)\n\n` +
                         `💇‍♀️ *${cita.servicio}* con ${cita.empleado}\n` +
                         `📅 ${formatearFecha(fechaCita)}\n` +
                         `🕐 ${fechaCita.toLocaleTimeString("es-CO", { hour: '2-digit', minute: '2-digit', hour12: true })}\n\n` +
                         `¡Te esperamos! 💖 \n\n` +
-                        'Si deseas cancelarla puedes entrar a la seccion "Consultar cita" ezcribiendo "MENU" y luego "2"';
+                        'Si deseas cancelarla puedes entrar a la seccion "Consultar cita" ezcribiendo "MENU" y luego "2" \n\n' + 
+                        'Recuerda que estamos ubicados en la Carrera 19 # 70A - 31 edificio alexandra 301, Barrios Unidos, Chapinero centrar, Bogotá D.C.';
       }
       await sock.sendMessage(numeroCompletoCliente, { text: mensajeCliente });
       // 2. Mensaje al GRUPO DE ADMINS
@@ -958,7 +960,7 @@ async function startBot() {
       if (!conv.estado) {
         conv.estado = "INICIO";
         await sock.sendMessage(from, { 
-          text: `¡Hola! 💖 Bienvenido/a a *Porque Tú Eres Bella* ✨\n\nSomos tu salón de belleza favorito. ¿En qué podemos ayudarte hoy?\n\n*Opciones disponibles:*\n1️⃣ Agendar cita\n2️⃣ Consultar cita existente\n3️⃣ Información de servicios\n\nEscribe el número de la opción (ej: 1)` 
+          text: `¡Hola! 💖 Bienvenido/a a *Porque Tú Eres Bella* ✨\n\nSomos tu salón de belleza favorito. ¿En qué podemos ayudarte hoy?\n\n*Opciones disponibles:*\n1️⃣ Agendar cita\n2️⃣ Consultar cita existente\n3️⃣ Información de servicios\n\nEscribe el número de la opción (ej: 1) \n\n Recuerda que estamos ubicados en la Carrera 19 # 70A - 31 edificio alexandra 301, Barrios Unidos, Chapinero centrar, Bogotá D.C.` 
         });
         return;
       }
