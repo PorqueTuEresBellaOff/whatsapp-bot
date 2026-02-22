@@ -39,8 +39,26 @@ if (!admin.apps.length) {
 const db = admin.database();
 
 // ================================
-// AUTH PERSISTENTE EN FIREBASE (NUNCA MÁS ESCANEAR QR)
+// AUTH PERSISTENTE EN FIREBASE (VERSIÓN CORREGIDA - SIN UNDEFINED)
 // ================================
+function sanitizeUndefined(obj) {
+  if (obj === undefined || obj === null) return null;
+  if (typeof obj !== 'object') return obj;
+  
+  if (Array.isArray(obj)) {
+    return obj.map(sanitizeUndefined);
+  }
+
+  const cleaned = {};
+  for (const [key, value] of Object.entries(obj)) {
+    const cleanValue = sanitizeUndefined(value);
+    if (cleanValue !== undefined) {           // solo guardamos si NO es undefined
+      cleaned[key] = cleanValue;
+    }
+  }
+  return cleaned;
+}
+
 async function useFirebaseAuthState(database, path = "baileys_auth") {
   const authRef = database.ref(path);
 
@@ -54,8 +72,10 @@ async function useFirebaseAuthState(database, path = "baileys_auth") {
     if (data.keys) keys = data.keys;
   }
 
-  const saveCreds = async () => {
-    await authRef.set({ creds, keys });
+  const saveToFirebase = async () => {
+    const cleanCreds = sanitizeUndefined(creds);
+    const cleanKeys = sanitizeUndefined(keys);
+    await authRef.set({ creds: cleanCreds, keys: cleanKeys });
   };
 
   return {
@@ -87,11 +107,11 @@ async function useFirebaseAuthState(database, path = "baileys_auth") {
               });
             }
           });
-          await saveCreds();
+          await saveToFirebase();
         }
       }
     },
-    saveCreds
+    saveCreds: saveToFirebase   // ← ahora usa la versión sanitizada
   };
 }
 
