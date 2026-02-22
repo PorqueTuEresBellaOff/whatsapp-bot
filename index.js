@@ -2,13 +2,12 @@
 // BOT WHATSAPP – PORQUE TÚ ERES BELLA
 // Baileys + Firebase persistencia de auth (sin archivos locales)
 // ===============================
+
 import express from "express";
 import { Mutex } from 'async-mutex';
 import makeWASocket, {
   DisconnectReason,
   useMultiFileAuthState, // solo como fallback si falla firebase
-  AuthenticationCreds,
-  initAuthCreds
 } from "@whiskeysockets/baileys";
 import { BufferJSON } from "@whiskeysockets/baileys/lib/Utils/index.js";
 import qrcode from "qrcode-terminal";
@@ -93,7 +92,6 @@ async function getFirebaseAuthState() {
   const state = {
     creds: null,
     keys: {
-      // get: lee múltiples keys de una categoría (app-state-sync-key, etc)
       get: async (type, ids) => {
         const data = {};
         await Promise.all(
@@ -105,7 +103,6 @@ async function getFirebaseAuthState() {
         return data;
       },
 
-      // set: guarda múltiples keys
       set: async (data) => {
         const promises = [];
         for (const category in data) {
@@ -128,11 +125,37 @@ async function getFirebaseAuthState() {
       state.creds = JSON.parse(JSON.stringify(raw), BufferJSON.reviver);
     } catch (err) {
       console.error("Error parseando creds desde Firebase:", err);
-      state.creds = initAuthCreds();
+      // Inicialización manual mínima (compatible con versiones recientes)
+      state.creds = {
+        noiseKey: undefined,
+        signedIdentityKey: undefined,
+        signedPreKey: undefined,
+        registrationId: 0,
+        advSecretKey: undefined,
+        nextPreKeyId: 0,
+        firstUnuploadedPreKeyId: 0,
+        browserToken: undefined,
+        account: undefined,
+        me: undefined,
+        keys: {},
+      };
     }
   } else {
-    console.log("No se encontraron creds en Firebase → generando nuevas");
-    state.creds = initAuthCreds();
+    console.log("No se encontraron creds en Firebase → generando nuevas mínimas");
+    // Inicialización manual cuando no existe nada
+    state.creds = {
+      noiseKey: undefined,
+      signedIdentityKey: undefined,
+      signedPreKey: undefined,
+      registrationId: 0,
+      advSecretKey: undefined,
+      nextPreKeyId: 0,
+      firstUnuploadedPreKeyId: 0,
+      browserToken: undefined,
+      account: undefined,
+      me: undefined,
+      keys: {},
+    };
   }
 
   const saveCreds = async () => {
@@ -143,7 +166,6 @@ async function getFirebaseAuthState() {
 
   return { state, saveCreds };
 }
-
 // ===============================
 // DATOS BASE
 // ===============================
