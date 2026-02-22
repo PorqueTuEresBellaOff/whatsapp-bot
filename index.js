@@ -117,49 +117,38 @@ async function getFirebaseAuthState() {
     }
   };
 
-  // Cargar credenciales principales
   const credsSnap = await rootRef.child('creds').once('value');
+
+  let credsFromDB = null;
+
   if (credsSnap.exists()) {
     const raw = credsSnap.val();
     try {
-      state.creds = JSON.parse(JSON.stringify(raw), BufferJSON.reviver);
+      credsFromDB = JSON.parse(JSON.stringify(raw), BufferJSON.reviver);
+      
+      // Validación mínima para saber si son creds reales o basura
+      if (!credsFromDB?.registrationId || credsFromDB.registrationId === 0) {
+        console.log("Creds en Firebase parecen inválidas o vacías → ignorando y forzando nuevo pairing");
+        credsFromDB = null;
+      }
     } catch (err) {
       console.error("Error parseando creds desde Firebase:", err);
-      // Inicialización manual mínima (compatible con versiones recientes)
-      state.creds = {
-        noiseKey: undefined,
-        signedIdentityKey: undefined,
-        signedPreKey: undefined,
-        registrationId: 0,
-        advSecretKey: undefined,
-        nextPreKeyId: 0,
-        firstUnuploadedPreKeyId: 0,
-        browserToken: undefined,
-        account: undefined,
-        me: undefined,
-        keys: {},
-      };
+      credsFromDB = null;
     }
+  }
+
+  if (credsFromDB) {
+    state.creds = credsFromDB;
+    console.log("Credenciales válidas cargadas desde Firebase");
   } else {
-    console.log("No se encontraron creds en Firebase → generando nuevas mínimas");
-    // Inicialización manual cuando no existe nada
-    state.creds = {
-      noiseKey: undefined,
-      signedIdentityKey: undefined,
-      signedPreKey: undefined,
-      registrationId: 0,
-      advSecretKey: undefined,
-      nextPreKeyId: 0,
-      firstUnuploadedPreKeyId: 0,
-      browserToken: undefined,
-      account: undefined,
-      me: undefined,
-      keys: {},
-    };
+    console.log("No hay creds válidas → Baileys generará QR automáticamente");
+    // NO asignes nada aquí → deja state.creds = null
+    // Baileys creará las creds reales y mostrará QR
   }
 
   const saveCreds = async () => {
     if (state.creds) {
+      console.log("Guardando creds actualizadas en Firebase");
       await setData('creds', state.creds);
     }
   };
