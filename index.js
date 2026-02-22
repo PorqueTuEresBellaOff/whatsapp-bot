@@ -491,29 +491,67 @@ async function startBot() {
 
   sock.ev.on("creds.update", saveCreds);
 
-  sock.ev.on("connection.update", ({ connection, qr }) => {
-    if (qr) {
-      console.log("🔗 Escanea este QR con tu WhatsApp Business:");
-      qrcode.generate(qr, { small: true });
-    }
-    if (connection === "open") {
-      console.log("✅ Bot conectado exitosamente (auth cargado desde Firebase)");
-      limpiarCitasPasadas();
-      reprogramarRecordatoriosPendientes(sock);
-      programarLimpiezaDiaria();
-      setInterval(() => {
-        const ahora = Date.now();
-        for (const [from, conv] of conversaciones) {
-          if (ahora - conv.lastActivity > 30 * 60 * 1000) {
-            conversaciones.delete(from);
-          }
+  // ==================== CONEXIÓN ROBUSTA (ANTI-BUCLE) ====================
+let reconnectAttempts = 0;
+const MAX_RECONNECTS = 5;
+
+sock.ev.on("connection.update", async (update) => {
+  const { connection, lastDisconnect, qr } = update;
+
+  if (qr) {
+    reconnectAttempts = 0; // resetear contador
+    console.log("🔗 Escanea este QR con tu WhatsApp Business (nuevo auth):");
+    qrcode.generate(qr, { small: true });
+    return;
+  }
+
+  if (connection === "open") {
+    console.log("✅ Bot conectado exitosamente (auth cargado desde Firebase)");
+    limpiarCitasPasadas();
+    reprogramarRecordatoriosPendientes(sock);
+    programarLimpiezaDiaria();
+    setInterval(() => {
+      const ahora = Date.now();
+      for (const [from, conv] of conversaciones) {
+        if (ahora - conv.lastActivity > 30 * 60 * 1000) {
+          conversaciones.delete(from);
         }
-      }, 5 * 60 * 1000);
-    } else if (connection === "close") {
-      console.log("❌ Bot desconectado, reconectando...");
-      setTimeout(startBot, 5000);
+      }
+    }, 5 * 60 * 1000);
+  }
+
+  if (connection === "close") {
+    const statusCode = lastDisconnect?.error?.output?.statusCode;
+    const reason = lastDisconnect?.error?.message || "Desconocido";
+
+    console.log(`❌ Conexión cerrada. Código: ${statusCode} | Razón: ${reason}`);
+
+    // Si WhatsApp nos cerró la sesión (logged out, bad session, etc.)
+    if (statusCode === DisconnectReason.loggedOut ||
+        statusCode === DisconnectReason.badSession ||
+        statusCode === DisconnectReason.connectionReplaced ||
+        statusCode === 401 || statusCode === 405 || statusCode === 428) {
+
+      console.log("🔄 Sesión inválida. Borrando auth de Firebase y generando nuevo QR...");
+      await db.ref("baileys_auth").remove(); // borra automáticamente
+      reconnectAttempts = 0;
     }
-  });
+
+    reconnectAttempts++;
+
+    if (reconnectAttempts >= MAX_RECONNECTS) {
+      console.log(`⛔ Demasiados intentos fallidos (${reconnectAttempts}). Esperando 30 segundos...`);
+      setTimeout(() => {
+        reconnectAttempts = 0;
+        startBot();
+      }, 30000);
+      return;
+    }
+
+    console.log(`🔄 Reintentando en 5 segundos... (intento ${reconnectAttempts}/${MAX_RECONNECTS})`);
+    setTimeout(() => startBot(), 5000);
+  }
+});
 
   sock.ev.on("messages.upsert", async ({ messages }) => {
     const msg = messages[0];
