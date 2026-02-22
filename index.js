@@ -1,33 +1,20 @@
 // ===============================
 // BOT WHATSAPP – PORQUE TÚ ERES BELLA
-// Baileys ACTUAL (SOLO RESPUESTAS DE TEXTO)
-// Firebase + Google Calendar
-// Citas como ARRAY dentro del cliente
+// Baileys + Firebase persistencia de auth (sin archivos locales)
 // ===============================
 import express from "express";
 import { Mutex } from 'async-mutex';
 import makeWASocket, {
-  useMultiFileAuthState,
-  DisconnectReason
+  DisconnectReason,
+  useMultiFileAuthState, // solo como fallback si falla firebase
+  AuthenticationCreds,
+  initAuthCreds
 } from "@whiskeysockets/baileys";
-
+import { BufferJSON } from "@whiskeysockets/baileys/lib/Utils";
 import qrcode from "qrcode-terminal";
-import pino from "pino"; // Logger
+import pino from "pino";
 
-import { crearEvento, eliminarEvento} from "./googleCalendar.js";
-import { obtenerHorasDisponibles, estaHoraDisponibleAhora } from "./disponibilidad.js";
-
-// ===============================
-// CONFIGURACIÓN DEL GRUPO PARA NOTIFICACIONES Y MODO ADMIN
-// ===============================
-const GROUP_ID = '120363424425387340@g.us'; // ← CAMBIAR AQUÍ: Reemplaza con el ID real de tu grupo
-
-// NOTA: Ahora CUALQUIER mensaje enviado a este grupo se considera comando ADMIN
-// No se necesita lista de números administradores
-
-// ===============================
-// FIREBASE
-// ===============================
+// Firebase
 import admin from "firebase-admin";
 
 if (!admin.apps.length) {
@@ -35,11 +22,127 @@ if (!admin.apps.length) {
 
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
-    databaseURL: "https://porquetueresbellaoficial-default-rtdb.firebaseio.com"  // ← CAMBIAR
+    databaseURL: "https://porquetueresbellaoficial-default-rtdb.firebaseio.com"
   });
 }
 
 const db = admin.database();
+
+// Rutas en Firebase donde se guarda la sesión
+const SESSION_ID = "bot_principal"; // puedes cambiarlo si quieres múltiples sesiones
+const AUTH_ROOT = `auth_states/${SESSION_ID}`;
+
+// ===============================
+// Persistencia de auth en Firebase (inline)
+// ===============================
+async function getFirebaseAuthState() {
+  const rootRef = db.ref(AUTH_ROOT);
+
+  const cache = new Map();
+
+  async function getData(key) {
+    if (cache.has(key)) return cache.get(key);
+
+    const snap = await rootRef.child(key).once('value');
+    if (!snap.exists()) return null;
+
+    const val = snap.val();
+
+    // Caso especial: Buffer guardado como base64
+    if (typeof val === 'string' && val.startsWith('buffer:')) {
+      const base64 = val.slice(7);
+      const buffer = Buffer.from(base64, 'base64');
+      cache.set(key, buffer);
+      return buffer;
+    }
+
+    // Caso JSON con posibles Buffers internos
+    if (typeof val === 'string' && val.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(val, BufferJSON.reviver);
+        cache.set(key, parsed);
+        return parsed;
+      } catch {}
+    }
+
+    cache.set(key, val);
+    return val;
+  }
+
+  async function setData(key, value) {
+    cache.set(key, value);
+
+    if (value == null) {
+      await rootRef.child(key).remove();
+      return;
+    }
+
+    let toSave;
+
+    if (Buffer.isBuffer(value)) {
+      toSave = 'buffer:' + value.toString('base64');
+    } else if (typeof value === 'object' && value !== null) {
+      toSave = JSON.stringify(value, BufferJSON.replacer);
+    } else {
+      toSave = value;
+    }
+
+    await rootRef.child(key).set(toSave);
+  }
+
+  const state = {
+    creds: null,
+    keys: {
+      // get: lee múltiples keys de una categoría (app-state-sync-key, etc)
+      get: async (type, ids) => {
+        const data = {};
+        await Promise.all(
+          ids.map(async id => {
+            const fullKey = `${type}_${id}`;
+            data[id] = await getData(fullKey);
+          })
+        );
+        return data;
+      },
+
+      // set: guarda múltiples keys
+      set: async (data) => {
+        const promises = [];
+        for (const category in data) {
+          for (const id in data[category]) {
+            const fullKey = `${category}_${id}`;
+            const value = data[category][id];
+            promises.push(setData(fullKey, value));
+          }
+        }
+        await Promise.all(promises);
+      }
+    }
+  };
+
+  // Cargar credenciales principales
+  const credsSnap = await rootRef.child('creds').once('value');
+  if (credsSnap.exists()) {
+    const raw = credsSnap.val();
+    try {
+      state.creds = JSON.parse(JSON.stringify(raw), BufferJSON.reviver);
+    } catch (err) {
+      console.error("Error parseando creds desde Firebase:", err);
+      state.creds = initAuthCreds();
+    }
+  } else {
+    console.log("No se encontraron creds en Firebase → generando nuevas");
+    state.creds = initAuthCreds();
+  }
+
+  const saveCreds = async () => {
+    if (state.creds) {
+      await setData('creds', state.creds);
+    }
+  };
+
+  return { state, saveCreds };
+}
 
 // ===============================
 // DATOS BASE
@@ -405,7 +508,7 @@ async function obtenerTodasCitasFuturas() {
 // BOT
 // ===============================
 async function startBot() {
-  const { state, saveCreds } = await useMultiFileAuthState("auth");
+  const { state, saveCreds } = await getFirebaseAuthState();
 
   const logger = pino({ level: 'silent' });
 
