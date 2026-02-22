@@ -10,7 +10,7 @@ import makeWASocket, {
   AuthenticationCreds,
   initAuthCreds
 } from "@whiskeysockets/baileys";
-import { BufferJSON } from "@whiskeysockets/baileys/lib/Utils";
+import { BufferJSON } from "@whiskeysockets/baileys/lib/Utils/index.js";
 import qrcode from "qrcode-terminal";
 import pino from "pino";
 
