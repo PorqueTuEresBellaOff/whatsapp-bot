@@ -39,109 +39,141 @@ if (!admin.apps.length) {
 const db = admin.database();
 
 // ================================
-// AUTH PERSISTENTE EN FIREBASE – VERSIÓN FINAL (Buffer seguro)
+// AUTH PERSISTENTE EN FIREBASE – POR SEPARADO (2025–2026 estilo)
 // ================================
-function toBase64(obj) {
-  if (!obj) return obj;
-  if (Buffer.isBuffer(obj) || obj instanceof Uint8Array) {
-    return Buffer.from(obj).toString('base64');
+
+function toBase64Safe(value) {
+  if (value === undefined || value === null) return null;
+
+  if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
+    return Buffer.from(value).toString('base64');
   }
-  if (Array.isArray(obj)) {
-    return obj.map(toBase64);
+
+  if (Array.isArray(value)) {
+    return value.map(toBase64Safe).filter(v => v !== null);
   }
-  if (typeof obj === 'object') {
+
+  if (typeof value === 'object') {
     const res = {};
-    for (const key in obj) {
-      res[key] = toBase64(obj[key]);
+    for (const key in value) {
+      const cleaned = toBase64Safe(value[key]);
+      if (cleaned !== null) res[key] = cleaned;
     }
-    return res;
+    return Object.keys(res).length > 0 ? res : null;
   }
-  return obj;
+
+  return value;
 }
 
-function fromBase64(obj) {
-  if (typeof obj === 'string') {
-    if (obj.length % 4 === 0 && /^[A-Za-z0-9+/=]+$/.test(obj)) {
-      try {
-        return Buffer.from(obj, 'base64');
-      } catch (e) {}
-    }
-    return obj;
+function fromBase64Safe(value) {
+  if (typeof value !== 'string') return value;
+  if (!value || value.length % 4 !== 0 || !/^[A-Za-z0-9+/=]+$/.test(value)) {
+    return value;
   }
-  if (Array.isArray(obj)) {
-    return obj.map(fromBase64);
+
+  try {
+    return Buffer.from(value, 'base64');
+  } catch (e) {
+    return value;
   }
-  if (obj && typeof obj === 'object') {
-    const res = {};
-    for (const key in obj) {
-      res[key] = fromBase64(obj[key]);
-    }
-    return res;
-  }
-  return obj;
 }
 
-async function useFirebaseAuthState(database, path = "baileys_auth") {
-  const authRef = database.ref(path);
+async function useFirebaseMultiKeyAuthState(database, basePath = "baileys_auth") {
+  const credsRef    = database.ref(`${basePath}/creds`);
+  const keysRef     = database.ref(`${basePath}/keys`);
 
+  // ── Cargar credenciales ───────────────────────────────────────
   let creds = initAuthCreds();
-  let keys = {};
 
-  const snapshot = await authRef.once("value");
-  if (snapshot.exists()) {
-    const data = snapshot.val() || {};
-    if (data.creds) creds = fromBase64(data.creds);
-    if (data.keys) keys = data.keys;
+  const credsSnap = await credsRef.once('value');
+  if (credsSnap.exists()) {
+    const raw = credsSnap.val();
+    const decoded = fromBase64Safe(raw);
+    if (decoded && typeof decoded === 'object') {
+      creds = { ...creds, ...decoded };
+    }
   }
 
-  const saveToFirebase = async () => {
-    const cleanCreds = toBase64(creds);
-    const cleanKeys = toBase64(keys);
-    await authRef.set({ creds: cleanCreds, keys: cleanKeys });
+  // ── Cargar keys ───────────────────────────────────────────────
+  const keys = {};
+
+  const keysSnap = await keysRef.once('value');
+  if (keysSnap.exists()) {
+    const allKeys = keysSnap.val() || {};
+    for (const [keyPath, val] of Object.entries(allKeys)) {
+      const decoded = fromBase64Safe(val);
+      if (decoded) {
+        keys[keyPath] = decoded;
+      }
+    }
+  }
+
+  // ── Guardar cambios ───────────────────────────────────────────
+  const saveCreds = async () => {
+    try {
+      const cleanCreds = toBase64Safe(creds);
+      if (cleanCreds) {
+        await credsRef.set(cleanCreds);
+      } else {
+        await credsRef.remove();
+      }
+    } catch (err) {
+      console.error("Error guardando creds:", err);
+    }
+  };
+
+  const saveKey = async (type, id, value) => {
+    const keyPath = `${type}.${id}`;
+    try {
+      if (value === null || value === undefined) {
+        await keysRef.child(keyPath).remove();
+        delete keys[keyPath];
+      } else {
+        const cleanValue = toBase64Safe(value);
+        if (cleanValue) {
+          await keysRef.child(keyPath).set(cleanValue);
+          keys[keyPath] = value; // mantener en memoria también
+        }
+      }
+    } catch (err) {
+      console.error(`Error guardando key ${keyPath}:`, err);
+    }
   };
 
   return {
     state: {
       creds,
+
       keys: {
+        // get: recibe array de ids y tipo → devuelve { id: value }
         get: (type, ids) => {
           const result = {};
           ids.forEach(id => {
             const key = `${type}.${id}`;
-            if (keys[key]) {
-              try {
-                result[id] = fromBase64(JSON.parse(keys[key]));
-              } catch (e) {
-                result[id] = null;
-              }
-            } else {
-              result[id] = null;
-            }
+            result[id] = keys[key] || null;
           });
           return result;
         },
+
+        // set: recibe objeto { category: { id: value } }
         set: async (data) => {
-          Object.keys(data).forEach(category => {
-            const categoryData = data[category];
-            if (categoryData) {
-              Object.keys(categoryData).forEach(id => {
-                const key = `${category}.${id}`;
-                const value = categoryData[id];
-                if (value !== undefined) {
-                  if (value === null) {
-                    delete keys[key];
-                  } else {
-                    keys[key] = JSON.stringify(toBase64(value));
-                  }
-                }
-              });
+          for (const category in data) {
+            const catData = data[category];
+            if (!catData) continue;
+
+            for (const id in catData) {
+              await saveKey(category, id, catData[id]);
             }
-          });
-          await saveToFirebase();
+          }
         }
       }
     },
-    saveCreds: saveToFirebase
+
+    // Baileys llama a saveCreds() cuando hay cambios importantes
+    saveCreds,
+
+    // Opcional: hook para que Baileys pueda guardar keys individualmente
+    saveKey
   };
 }
 
@@ -510,8 +542,8 @@ async function obtenerTodasCitasFuturas() {
 // ===============================
 async function startBot() {
   // 🔥 AUTH EN FIREBASE - NUNCA MÁS QR AL REINICIAR
-  const { state, saveCreds } = await useFirebaseAuthState(db, "baileys_auth");
-
+  
+  const { state, saveCreds } = await useFirebaseMultiKeyAuthState(db, "baileys_auth");
   const logger = pino({ level: 'silent' });
   const sock = makeWASocket({
     auth: state,
