@@ -39,24 +39,46 @@ if (!admin.apps.length) {
 const db = admin.database();
 
 // ================================
-// AUTH PERSISTENTE EN FIREBASE (VERSIÓN CORREGIDA - SIN UNDEFINED)
+// AUTH PERSISTENTE EN FIREBASE – VERSIÓN FINAL (Buffer seguro)
 // ================================
-function sanitizeUndefined(obj) {
-  if (obj === undefined || obj === null) return null;
-  if (typeof obj !== 'object') return obj;
-  
+function toBase64(obj) {
+  if (!obj) return obj;
+  if (Buffer.isBuffer(obj) || obj instanceof Uint8Array) {
+    return Buffer.from(obj).toString('base64');
+  }
   if (Array.isArray(obj)) {
-    return obj.map(sanitizeUndefined);
+    return obj.map(toBase64);
   }
-
-  const cleaned = {};
-  for (const [key, value] of Object.entries(obj)) {
-    const cleanValue = sanitizeUndefined(value);
-    if (cleanValue !== undefined) {           // solo guardamos si NO es undefined
-      cleaned[key] = cleanValue;
+  if (typeof obj === 'object') {
+    const res = {};
+    for (const key in obj) {
+      res[key] = toBase64(obj[key]);
     }
+    return res;
   }
-  return cleaned;
+  return obj;
+}
+
+function fromBase64(obj) {
+  if (typeof obj === 'string') {
+    if (obj.length % 4 === 0 && /^[A-Za-z0-9+/=]+$/.test(obj)) {
+      try {
+        return Buffer.from(obj, 'base64');
+      } catch (e) {}
+    }
+    return obj;
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(fromBase64);
+  }
+  if (obj && typeof obj === 'object') {
+    const res = {};
+    for (const key in obj) {
+      res[key] = fromBase64(obj[key]);
+    }
+    return res;
+  }
+  return obj;
 }
 
 async function useFirebaseAuthState(database, path = "baileys_auth") {
@@ -68,13 +90,13 @@ async function useFirebaseAuthState(database, path = "baileys_auth") {
   const snapshot = await authRef.once("value");
   if (snapshot.exists()) {
     const data = snapshot.val() || {};
-    if (data.creds) creds = data.creds;
+    if (data.creds) creds = fromBase64(data.creds);
     if (data.keys) keys = data.keys;
   }
 
   const saveToFirebase = async () => {
-    const cleanCreds = sanitizeUndefined(creds);
-    const cleanKeys = sanitizeUndefined(keys);
+    const cleanCreds = toBase64(creds);
+    const cleanKeys = toBase64(keys);
     await authRef.set({ creds: cleanCreds, keys: cleanKeys });
   };
 
@@ -86,7 +108,15 @@ async function useFirebaseAuthState(database, path = "baileys_auth") {
           const result = {};
           ids.forEach(id => {
             const key = `${type}.${id}`;
-            result[id] = keys[key] ? JSON.parse(keys[key]) : null;
+            if (keys[key]) {
+              try {
+                result[id] = fromBase64(JSON.parse(keys[key]));
+              } catch (e) {
+                result[id] = null;
+              }
+            } else {
+              result[id] = null;
+            }
           });
           return result;
         },
@@ -101,7 +131,7 @@ async function useFirebaseAuthState(database, path = "baileys_auth") {
                   if (value === null) {
                     delete keys[key];
                   } else {
-                    keys[key] = JSON.stringify(value);
+                    keys[key] = JSON.stringify(toBase64(value));
                   }
                 }
               });
@@ -111,7 +141,7 @@ async function useFirebaseAuthState(database, path = "baileys_auth") {
         }
       }
     },
-    saveCreds: saveToFirebase   // ← ahora usa la versión sanitizada
+    saveCreds: saveToFirebase
   };
 }
 
