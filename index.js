@@ -7,8 +7,8 @@
 import express from "express";
 import { Mutex } from 'async-mutex';
 import makeWASocket, {
-  useMultiFileAuthState,
-  DisconnectReason
+  DisconnectReason,
+  initAuthCreds
 } from "@whiskeysockets/baileys";
 
 import qrcode from "qrcode-terminal";
@@ -29,17 +29,71 @@ const GROUP_ID = '120363424425387340@g.us'; // ← CAMBIAR AQUÍ: Reemplaza con 
 // FIREBASE
 // ===============================
 import admin from "firebase-admin";
-
 if (!admin.apps.length) {
   const serviceAccount = JSON.parse(process.env.GOOGLE_CREDENTIALS);
-
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
-    databaseURL: "https://porquetueresbellaoficial-default-rtdb.firebaseio.com"  // ← CAMBIAR
+    databaseURL: "https://porquetueresbellaoficial-default-rtdb.firebaseio.com"
   });
 }
-
 const db = admin.database();
+
+// ================================
+// AUTH PERSISTENTE EN FIREBASE (NUNCA MÁS ESCANEAR QR)
+// ================================
+async function useFirebaseAuthState(database, path = "baileys_auth") {
+  const authRef = database.ref(path);
+
+  let creds = initAuthCreds();
+  let keys = {};
+
+  const snapshot = await authRef.once("value");
+  if (snapshot.exists()) {
+    const data = snapshot.val() || {};
+    if (data.creds) creds = data.creds;
+    if (data.keys) keys = data.keys;
+  }
+
+  const saveCreds = async () => {
+    await authRef.set({ creds, keys });
+  };
+
+  return {
+    state: {
+      creds,
+      keys: {
+        get: (type, ids) => {
+          const result = {};
+          ids.forEach(id => {
+            const key = `${type}.${id}`;
+            result[id] = keys[key] ? JSON.parse(keys[key]) : null;
+          });
+          return result;
+        },
+        set: async (data) => {
+          Object.keys(data).forEach(category => {
+            const categoryData = data[category];
+            if (categoryData) {
+              Object.keys(categoryData).forEach(id => {
+                const key = `${category}.${id}`;
+                const value = categoryData[id];
+                if (value !== undefined) {
+                  if (value === null) {
+                    delete keys[key];
+                  } else {
+                    keys[key] = JSON.stringify(value);
+                  }
+                }
+              });
+            }
+          });
+          await saveCreds();
+        }
+      }
+    },
+    saveCreds
+  };
+}
 
 // ===============================
 // DATOS BASE
@@ -405,10 +459,10 @@ async function obtenerTodasCitasFuturas() {
 // BOT
 // ===============================
 async function startBot() {
-  const { state, saveCreds } = await useMultiFileAuthState("auth");
+  // 🔥 AUTH EN FIREBASE - NUNCA MÁS QR AL REINICIAR
+  const { state, saveCreds } = await useFirebaseAuthState(db, "baileys_auth");
 
   const logger = pino({ level: 'silent' });
-
   const sock = makeWASocket({
     auth: state,
     printQRInTerminal: false,
@@ -419,23 +473,22 @@ async function startBot() {
 
   sock.ev.on("connection.update", ({ connection, qr }) => {
     if (qr) {
-      console.log("🔗 Escanea este QR con tu WhatsApp:");
+      console.log("🔗 Escanea este QR con tu WhatsApp Business:");
       qrcode.generate(qr, { small: true });
     }
     if (connection === "open") {
-      console.log("✅ Bot conectado exitosamente");
+      console.log("✅ Bot conectado exitosamente (auth cargado desde Firebase)");
       limpiarCitasPasadas();
       reprogramarRecordatoriosPendientes(sock);
       programarLimpiezaDiaria();
       setInterval(() => {
         const ahora = Date.now();
         for (const [from, conv] of conversaciones) {
-          if (ahora - conv.lastActivity > 30 * 60 * 1000) { // 30 minutos sin actividad
-            console.log(`🧹 Limpiando conversación inactiva: ${from}`);
+          if (ahora - conv.lastActivity > 30 * 60 * 1000) {
             conversaciones.delete(from);
           }
         }
-      }, 5 * 60 * 1000); // revisar cada 5 minutos
+      }, 5 * 60 * 1000);
     } else if (connection === "close") {
       console.log("❌ Bot desconectado, reconectando...");
       setTimeout(startBot, 5000);
