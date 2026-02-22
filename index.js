@@ -7,8 +7,8 @@
 import express from "express";
 import { Mutex } from 'async-mutex';
 import makeWASocket, {
-  DisconnectReason,
-  initAuthCreds
+  useMultiFileAuthState,
+  DisconnectReason
 } from "@whiskeysockets/baileys";
 
 import qrcode from "qrcode-terminal";
@@ -29,196 +29,17 @@ const GROUP_ID = '120363424425387340@g.us'; // ← CAMBIAR AQUÍ: Reemplaza con 
 // FIREBASE
 // ===============================
 import admin from "firebase-admin";
+
 if (!admin.apps.length) {
   const serviceAccount = JSON.parse(process.env.GOOGLE_CREDENTIALS);
+
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
-    databaseURL: "https://porquetueresbellaoficial-default-rtdb.firebaseio.com"
+    databaseURL: "https://porquetueresbellaoficial-default-rtdb.firebaseio.com"  // ← CAMBIAR
   });
 }
+
 const db = admin.database();
-
-// ================================
-// AUTH PERSISTENTE EN FIREBASE – POR SEPARADO + BASE64 + BINARY FIX
-// ================================
-
-// Helper: convierte cualquier cosa binaria a base64 para guardar
-function toBase64Safe(value) {
-  if (value == null) return null;
-
-  if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
-    return Buffer.from(value).toString('base64');
-  }
-
-  if (Array.isArray(value)) {
-    return value.map(toBase64Safe).filter(v => v != null);
-  }
-
-  if (typeof value === 'object') {
-    const res = {};
-    for (const key in value) {
-      const cleaned = toBase64Safe(value[key]);
-      if (cleaned != null) res[key] = cleaned;
-    }
-    return Object.keys(res).length > 0 ? res : null;
-  }
-
-  return value; // primitivos normales
-}
-
-// Helper: convierte base64 → Uint8Array (preferido por Baileys crypto)
-function fromBase64ToBinary(base64Str) {
-  if (typeof base64Str !== 'string' || !base64Str) return null;
-
-  try {
-    const buffer = Buffer.from(base64Str, 'base64');
-    return new Uint8Array(buffer); // Baileys espera Uint8Array en claves privadas
-  } catch (err) {
-    console.warn(`Error decodificando base64 a binary: ${err.message}`);
-    return null;
-  }
-}
-
-// Helper principal de carga: restaura binarios en creds y keys
-function restoreBinaryFields(obj) {
-  if (!obj || typeof obj !== 'object') return obj;
-
-  const binaryPaths = [
-    'signedIdentityKey.private',
-    'signedIdentityKey.public',
-    'signedDeviceIdentity',
-    'registrationId', // no binario pero chequeamos
-    // Agrega más si ves otros en logs (ej: noiseKey, etc.)
-  ];
-
-  const result = { ...obj };
-
-  binaryPaths.forEach(path => {
-    const parts = path.split('.');
-    let current = result;
-    for (let i = 0; i < parts.length - 1; i++) {
-      current = current[parts[i]];
-      if (!current) return;
-    }
-    const key = parts[parts.length - 1];
-    if (current[key] && typeof current[key] === 'string') {
-      const binary = fromBase64ToBinary(current[key]);
-      if (binary) {
-        current[key] = binary;
-      }
-    }
-  });
-
-  return result;
-}
-
-async function useFirebaseMultiKeyAuthState(database, basePath = "baileys_auth") {
-  const credsRef = database.ref(`${basePath}/creds`);
-  const keysRef  = database.ref(`${basePath}/keys`);
-
-  // ── Cargar creds ──────────────────────────────────────────────
-  let creds = initAuthCreds();
-
-  try {
-    const credsSnap = await credsRef.once('value');
-    if (credsSnap.exists()) {
-      let raw = credsSnap.val();
-
-      // Restaurar binarios en campos clave
-      raw = restoreBinaryFields(raw);
-
-      creds = { ...creds, ...raw };
-      console.log("Creds cargados. signedIdentityKey.private es:", 
-        creds.signedIdentityKey?.private instanceof Uint8Array ? "Uint8Array OK" : typeof creds.signedIdentityKey?.private);
-    }
-  } catch (err) {
-    console.error("Error cargando creds:", err);
-  }
-
-  // ── Cargar keys ───────────────────────────────────────────────
-  const keys = {};
-
-  try {
-    const keysSnap = await keysRef.once('value');
-    if (keysSnap.exists()) {
-      const all = keysSnap.val() || {};
-      for (const [keyPath, val] of Object.entries(all)) {
-        let decoded;
-        if (typeof val === 'string') {
-          decoded = fromBase64ToBinary(val);
-        } else if (val && typeof val === 'object') {
-          decoded = restoreBinaryFields(val);
-        }
-
-        if (decoded) {
-          keys[keyPath] = decoded;
-        }
-      }
-    }
-  } catch (err) {
-    console.error("Error cargando keys:", err);
-  }
-
-  // ── Guardar creds ─────────────────────────────────────────────
-  const saveCreds = async () => {
-    try {
-      const cleaned = toBase64Safe(creds);
-      if (cleaned && Object.keys(cleaned).length > 0) {
-        await credsRef.set(cleaned);
-        console.log("creds guardados OK (base64)");
-      } else {
-        await credsRef.remove().catch(() => {});
-      }
-    } catch (err) {
-      console.error("Error guardando creds:", err.message || err);
-    }
-  };
-
-  // ── Guardar key individual ────────────────────────────────────
-  const saveKey = async (type, id, value) => {
-    const keyPath = `${type}.${id}`;
-    try {
-      if (value == null) {
-        await keysRef.child(keyPath).remove();
-        delete keys[keyPath];
-      } else {
-        const toSave = toBase64Safe(value);
-        if (toSave != null) {
-          await keysRef.child(keyPath).set(toSave);
-          keys[keyPath] = value; // mantener original en memoria (Uint8Array)
-        }
-      }
-    } catch (err) {
-      console.error(`Error guardando key ${keyPath}:`, err);
-    }
-  };
-
-  return {
-    state: {
-      creds,
-      keys: {
-        get: (type, ids) => {
-          const result = {};
-          ids.forEach(id => {
-            const key = `${type}.${id}`;
-            result[id] = keys[key] ?? null;
-          });
-          return result;
-        },
-        set: async (data) => {
-          for (const category in data) {
-            const catData = data[category] || {};
-            for (const id in catData) {
-              await saveKey(category, id, catData[id]);
-            }
-          }
-        }
-      }
-    },
-    saveCreds,
-    saveKey
-  };
-}
 
 // ===============================
 // DATOS BASE
@@ -584,10 +405,10 @@ async function obtenerTodasCitasFuturas() {
 // BOT
 // ===============================
 async function startBot() {
-  // 🔥 AUTH EN FIREBASE - NUNCA MÁS QR AL REINICIAR
-  
-  const { state, saveCreds } = await useFirebaseMultiKeyAuthState(db, "baileys_auth");
+  const { state, saveCreds } = await useMultiFileAuthState("auth");
+
   const logger = pino({ level: 'silent' });
+
   const sock = makeWASocket({
     auth: state,
     printQRInTerminal: false,
@@ -596,67 +417,30 @@ async function startBot() {
 
   sock.ev.on("creds.update", saveCreds);
 
-  // ==================== CONEXIÓN ROBUSTA (ANTI-BUCLE) ====================
-let reconnectAttempts = 0;
-const MAX_RECONNECTS = 5;
-
-sock.ev.on("connection.update", async (update) => {
-  const { connection, lastDisconnect, qr } = update;
-
-  if (qr) {
-    reconnectAttempts = 0; // resetear contador
-    console.log("🔗 Escanea este QR con tu WhatsApp Business (nuevo auth):");
-    qrcode.generate(qr, { small: true });
-    return;
-  }
-
-  if (connection === "open") {
-    console.log("✅ Bot conectado exitosamente (auth cargado desde Firebase)");
-    limpiarCitasPasadas();
-    reprogramarRecordatoriosPendientes(sock);
-    programarLimpiezaDiaria();
-    setInterval(() => {
-      const ahora = Date.now();
-      for (const [from, conv] of conversaciones) {
-        if (ahora - conv.lastActivity > 30 * 60 * 1000) {
-          conversaciones.delete(from);
+  sock.ev.on("connection.update", ({ connection, qr }) => {
+    if (qr) {
+      console.log("🔗 Escanea este QR con tu WhatsApp:");
+      qrcode.generate(qr, { small: true });
+    }
+    if (connection === "open") {
+      console.log("✅ Bot conectado exitosamente");
+      limpiarCitasPasadas();
+      reprogramarRecordatoriosPendientes(sock);
+      programarLimpiezaDiaria();
+      setInterval(() => {
+        const ahora = Date.now();
+        for (const [from, conv] of conversaciones) {
+          if (ahora - conv.lastActivity > 30 * 60 * 1000) { // 30 minutos sin actividad
+            console.log(`🧹 Limpiando conversación inactiva: ${from}`);
+            conversaciones.delete(from);
+          }
         }
-      }
-    }, 5 * 60 * 1000);
-  }
-
-  if (connection === "close") {
-    const statusCode = lastDisconnect?.error?.output?.statusCode;
-    const reason = lastDisconnect?.error?.message || "Desconocido";
-
-    console.log(`❌ Conexión cerrada. Código: ${statusCode} | Razón: ${reason}`);
-
-    // Si WhatsApp nos cerró la sesión (logged out, bad session, etc.)
-    if (statusCode === DisconnectReason.loggedOut ||
-        statusCode === DisconnectReason.badSession ||
-        statusCode === DisconnectReason.connectionReplaced ||
-        statusCode === 401 || statusCode === 405 || statusCode === 428) {
-
-      console.log("🔄 Sesión inválida. Borrando auth de Firebase y generando nuevo QR...");
-      await db.ref("baileys_auth").remove(); // borra automáticamente
-      reconnectAttempts = 0;
+      }, 5 * 60 * 1000); // revisar cada 5 minutos
+    } else if (connection === "close") {
+      console.log("❌ Bot desconectado, reconectando...");
+      setTimeout(startBot, 5000);
     }
-
-    reconnectAttempts++;
-
-    if (reconnectAttempts >= MAX_RECONNECTS) {
-      console.log(`⛔ Demasiados intentos fallidos (${reconnectAttempts}). Esperando 30 segundos...`);
-      setTimeout(() => {
-        reconnectAttempts = 0;
-        startBot();
-      }, 30000);
-      return;
-    }
-
-    console.log(`🔄 Reintentando en 5 segundos... (intento ${reconnectAttempts}/${MAX_RECONNECTS})`);
-    setTimeout(() => startBot(), 5000);
-  }
-});
+  });
 
   sock.ev.on("messages.upsert", async ({ messages }) => {
     const msg = messages[0];
