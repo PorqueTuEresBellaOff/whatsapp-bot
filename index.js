@@ -39,100 +39,131 @@ if (!admin.apps.length) {
 const db = admin.database();
 
 // ================================
-// AUTH PERSISTENTE EN FIREBASE – POR SEPARADO (2025–2026 estilo)
+// AUTH PERSISTENTE EN FIREBASE – POR SEPARADO + LIMPIEZA AGRESIVA
 // ================================
 
-function toBase64Safe(value) {
-  if (value === undefined || value === null) return null;
-
-  if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
-    return Buffer.from(value).toString('base64');
-  }
-
-  if (Array.isArray(value)) {
-    return value.map(toBase64Safe).filter(v => v !== null);
-  }
-
-  if (typeof value === 'object') {
-    const res = {};
-    for (const key in value) {
-      const cleaned = toBase64Safe(value[key]);
-      if (cleaned !== null) res[key] = cleaned;
-    }
-    return Object.keys(res).length > 0 ? res : null;
-  }
-
-  return value;
+function isSerializable(value) {
+  if (value === null || value === undefined) return true;
+  const type = typeof value;
+  return type === 'string' || type === 'number' || type === 'boolean' || 
+         (Array.isArray(value)) || (type === 'object' && value !== null);
 }
 
-function fromBase64Safe(value) {
-  if (typeof value !== 'string') return value;
-  if (!value || value.length % 4 !== 0 || !/^[A-Za-z0-9+/=]+$/.test(value)) {
-    return value;
+function deepCleanForFirebase(obj, path = '') {
+  if (obj === null || obj === undefined) {
+    return null;
   }
 
-  try {
-    return Buffer.from(value, 'base64');
-  } catch (e) {
-    return value;
+  // Manejar Buffers y Uint8Array → base64
+  if (Buffer.isBuffer(obj) || obj instanceof Uint8Array) {
+    return Buffer.from(obj).toString('base64');
   }
+
+  // Eliminar cualquier función (toJSON, etc.)
+  if (typeof obj === 'function') {
+    console.warn(`Función eliminada en path: ${path}`);
+    return null;
+  }
+
+  if (Array.isArray(obj)) {
+    return obj
+      .map((v, i) => deepCleanForFirebase(v, `${path}[${i}]`))
+      .filter(v => v !== null && v !== undefined);
+  }
+
+  if (typeof obj === 'object') {
+    const cleaned = {};
+
+    for (const key in obj) {
+      const fullPath = path ? `${path}.${key}` : key;
+      const val = obj[key];
+
+      // Casos problemáticos conocidos en Baileys
+      if (fullPath.includes('.account.toJSON') || 
+          typeof val === 'function') {
+        console.warn(`Propiedad no serializable eliminada: ${fullPath}`);
+        continue;
+      }
+
+      const cleanedVal = deepCleanForFirebase(val, fullPath);
+      if (cleanedVal !== null && cleanedVal !== undefined) {
+        cleaned[key] = cleanedVal;
+      }
+    }
+
+    return Object.keys(cleaned).length > 0 ? cleaned : null;
+  }
+
+  // Primitivos directos
+  return obj;
 }
 
 async function useFirebaseMultiKeyAuthState(database, basePath = "baileys_auth") {
-  const credsRef    = database.ref(`${basePath}/creds`);
-  const keysRef     = database.ref(`${basePath}/keys`);
+  const credsRef = database.ref(`${basePath}/creds`);
+  const keysRef  = database.ref(`${basePath}/keys`);
 
-  // ── Cargar credenciales ───────────────────────────────────────
+  // ── Cargar creds ──────────────────────────────────────────────
   let creds = initAuthCreds();
 
-  const credsSnap = await credsRef.once('value');
-  if (credsSnap.exists()) {
-    const raw = credsSnap.val();
-    const decoded = fromBase64Safe(raw);
-    if (decoded && typeof decoded === 'object') {
-      creds = { ...creds, ...decoded };
+  try {
+    const credsSnap = await credsRef.once('value');
+    if (credsSnap.exists()) {
+      const raw = credsSnap.val();
+      if (typeof raw === 'object') {
+        creds = { ...creds, ...raw }; // merge seguro
+      }
     }
+  } catch (err) {
+    console.error("Error cargando creds:", err);
   }
 
   // ── Cargar keys ───────────────────────────────────────────────
   const keys = {};
 
-  const keysSnap = await keysRef.once('value');
-  if (keysSnap.exists()) {
-    const allKeys = keysSnap.val() || {};
-    for (const [keyPath, val] of Object.entries(allKeys)) {
-      const decoded = fromBase64Safe(val);
-      if (decoded) {
-        keys[keyPath] = decoded;
+  try {
+    const keysSnap = await keysRef.once('value');
+    if (keysSnap.exists()) {
+      const all = keysSnap.val() || {};
+      for (const [keyPath, val] of Object.entries(all)) {
+        if (val && typeof val === 'object') {
+          keys[keyPath] = val;
+        }
       }
     }
+  } catch (err) {
+    console.error("Error cargando keys:", err);
   }
 
-  // ── Guardar cambios ───────────────────────────────────────────
+  // ── Guardar creds (con limpieza agresiva) ─────────────────────
   const saveCreds = async () => {
     try {
-      const cleanCreds = toBase64Safe(creds);
-      if (cleanCreds) {
-        await credsRef.set(cleanCreds);
+      // Limpieza profunda antes de guardar
+      const cleanedCreds = deepCleanForFirebase(creds, 'creds');
+
+      if (cleanedCreds && Object.keys(cleanedCreds).length > 0) {
+        await credsRef.set(cleanedCreds);
+        console.log("creds guardados OK (limpiados)");
       } else {
-        await credsRef.remove();
+        console.warn("creds vacíos después de limpieza → no se guardan");
+        await credsRef.remove().catch(() => {});
       }
     } catch (err) {
-      console.error("Error guardando creds:", err);
+      console.error("Error al guardar creds:", err.message || err);
     }
   };
 
+  // ── Guardar key individual ────────────────────────────────────
   const saveKey = async (type, id, value) => {
     const keyPath = `${type}.${id}`;
     try {
-      if (value === null || value === undefined) {
+      if (value == null) {
         await keysRef.child(keyPath).remove();
         delete keys[keyPath];
       } else {
-        const cleanValue = toBase64Safe(value);
-        if (cleanValue) {
-          await keysRef.child(keyPath).set(cleanValue);
-          keys[keyPath] = value; // mantener en memoria también
+        const cleaned = deepCleanForFirebase(value, `keys.${keyPath}`);
+        if (cleaned != null) {
+          await keysRef.child(keyPath).set(cleaned);
+          keys[keyPath] = value; // cache en memoria (sin limpiar)
         }
       }
     } catch (err) {
@@ -145,22 +176,18 @@ async function useFirebaseMultiKeyAuthState(database, basePath = "baileys_auth")
       creds,
 
       keys: {
-        // get: recibe array de ids y tipo → devuelve { id: value }
         get: (type, ids) => {
           const result = {};
-          ids.forEach(id => {
+          for (const id of ids) {
             const key = `${type}.${id}`;
-            result[id] = keys[key] || null;
-          });
+            result[id] = keys[key] ?? null;
+          }
           return result;
         },
 
-        // set: recibe objeto { category: { id: value } }
         set: async (data) => {
           for (const category in data) {
-            const catData = data[category];
-            if (!catData) continue;
-
+            const catData = data[category] || {};
             for (const id in catData) {
               await saveKey(category, id, catData[id]);
             }
@@ -169,11 +196,8 @@ async function useFirebaseMultiKeyAuthState(database, basePath = "baileys_auth")
       }
     },
 
-    // Baileys llama a saveCreds() cuando hay cambios importantes
     saveCreds,
-
-    // Opcional: hook para que Baileys pueda guardar keys individualmente
-    saveKey
+    saveKey  // Baileys lo usa internamente en algunos casos
   };
 }
 
