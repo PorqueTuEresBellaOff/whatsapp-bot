@@ -11,6 +11,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@google-cloud/storage": "^7.19.0",
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "async-mutex": "^0.5.0",
     "express": "^5.2.1",

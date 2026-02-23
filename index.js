@@ -1,160 +1,106 @@
 // ===============================
 // BOT WHATSAPP – PORQUE TÚ ERES BELLA
-// Baileys + Firebase persistencia de auth (sin archivos locales)
+// Baileys + Firebase Storage para guardar auth (credenciales)
 // ===============================
 
 import express from "express";
 import { Mutex } from 'async-mutex';
 import makeWASocket, {
   DisconnectReason,
-  useMultiFileAuthState, // solo como fallback si falla firebase
+  AuthenticationState,
+  BufferJSON
 } from "@whiskeysockets/baileys";
-import { BufferJSON } from "@whiskeysockets/baileys/lib/Utils/index.js";
+
 import qrcode from "qrcode-terminal";
 import pino from "pino";
 
-// Firebase
 import admin from "firebase-admin";
+import { getStorage } from "firebase-admin/storage";
 
+import { crearEvento, eliminarEvento } from "./googleCalendar.js";
+import { obtenerHorasDisponibles, estaHoraDisponibleAhora } from "./disponibilidad.js";
+
+// ===============================
+// FIREBASE INICIALIZACIÓN
+// ===============================
 if (!admin.apps.length) {
   const serviceAccount = JSON.parse(process.env.GOOGLE_CREDENTIALS);
 
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
-    databaseURL: "https://porquetueresbellaoficial-default-rtdb.firebaseio.com"
+    databaseURL: "https://porquetueresbellaoficial-default-rtdb.firebaseio.com",
+    storageBucket: "porquetueresbellaoficial.firebasestorage.app"
   });
 }
 
-const db = admin.database();
-
-// Rutas en Firebase donde se guarda la sesión
-const SESSION_ID = "bot_principal"; // puedes cambiarlo si quieres múltiples sesiones
-const AUTH_ROOT = `auth_states/${SESSION_ID}`;
+const storage = getStorage();
+const bucket = storage.bucket();
+const AUTH_FILE_PATH = "auth/baileys_creds.json";
 
 // ===============================
-// Persistencia de auth en Firebase (inline)
+// FUNCIÓN PARA MANEJAR AUTH EN FIREBASE STORAGE
 // ===============================
-async function getFirebaseAuthState() {
-  const rootRef = db.ref(AUTH_ROOT);
+async function useFirebaseStorageAuthState() {
+  let creds = null;
 
-  const cache = new Map();
+  // Intentamos descargar las credenciales existentes
+  try {
+    const file = bucket.file(AUTH_FILE_PATH);
+    const [exists] = await file.exists();
 
-  async function getData(key) {
-    if (cache.has(key)) return cache.get(key);
-
-    const snap = await rootRef.child(key).once('value');
-    if (!snap.exists()) return null;
-
-    const val = snap.val();
-
-    // Caso especial: Buffer guardado como base64
-    if (typeof val === 'string' && val.startsWith('buffer:')) {
-      const base64 = val.slice(7);
-      const buffer = Buffer.from(base64, 'base64');
-      cache.set(key, buffer);
-      return buffer;
-    }
-
-    // Caso JSON con posibles Buffers internos
-    if (typeof val === 'string' && val.startsWith('{')) {
-      try {
-        const parsed = JSON.parse(val, BufferJSON.reviver);
-        cache.set(key, parsed);
-        return parsed;
-      } catch {}
-    }
-
-    cache.set(key, val);
-    return val;
-  }
-
-  async function setData(key, value) {
-    cache.set(key, value);
-
-    if (value == null) {
-      await rootRef.child(key).remove();
-      return;
-    }
-
-    let toSave;
-
-    if (Buffer.isBuffer(value)) {
-      toSave = 'buffer:' + value.toString('base64');
-    } else if (typeof value === 'object' && value !== null) {
-      toSave = JSON.stringify(value, BufferJSON.replacer);
+    if (exists) {
+      console.log("📥 Descargando credenciales desde Firebase Storage...");
+      const [buffer] = await file.download();
+      const jsonString = buffer.toString("utf-8");
+      creds = JSON.parse(jsonString, BufferJSON.reviver);
+      console.log("✅ Credenciales cargadas desde Storage");
     } else {
-      toSave = value;
+      console.log("🆕 No se encontraron credenciales en Storage → primera conexión");
     }
-
-    await rootRef.child(key).set(toSave);
+  } catch (err) {
+    console.error("Error al intentar descargar credenciales:", err.message);
+    // Si falla → asumimos que es la primera vez
   }
 
   const state = {
-    creds: null,
+    creds: creds || {},
     keys: {
-      get: async (type, ids) => {
-        const data = {};
-        await Promise.all(
-          ids.map(async id => {
-            const fullKey = `${type}_${id}`;
-            data[id] = await getData(fullKey);
-          })
-        );
-        return data;
-      },
-
-      set: async (data) => {
-        const promises = [];
-        for (const category in data) {
-          for (const id in data[category]) {
-            const fullKey = `${category}_${id}`;
-            const value = data[category][id];
-            promises.push(setData(fullKey, value));
-          }
-        }
-        await Promise.all(promises);
-      }
+      // Versión simplificada (multi-device lite no necesita keys separadas)
+      get: async () => ({}),
+      set: async () => {}
     }
   };
 
-  const credsSnap = await rootRef.child('creds').once('value');
-
-  let credsFromDB = null;
-
-  if (credsSnap.exists()) {
-    const raw = credsSnap.val();
-    try {
-      credsFromDB = JSON.parse(JSON.stringify(raw), BufferJSON.reviver);
-      
-      // Validación mínima para saber si son creds reales o basura
-      if (!credsFromDB?.registrationId || credsFromDB.registrationId === 0) {
-        console.log("Creds en Firebase parecen inválidas o vacías → ignorando y forzando nuevo pairing");
-        credsFromDB = null;
-      }
-    } catch (err) {
-      console.error("Error parseando creds desde Firebase:", err);
-      credsFromDB = null;
-    }
-  }
-
-  if (credsFromDB) {
-    state.creds = credsFromDB;
-    console.log("Credenciales válidas cargadas desde Firebase");
-  } else {
-    console.log("No hay creds válidas → Baileys generará QR automáticamente");
-    // NO asignes nada aquí → deja state.creds = null
-    // Baileys creará las creds reales y mostrará QR
-  }
-
   const saveCreds = async () => {
-    if (state.creds) {
-      console.log("Guardando creds actualizadas en Firebase");
-      await setData('creds', state.creds);
+    if (!state.creds) return;
+
+    try {
+      const jsonString = JSON.stringify(state.creds, BufferJSON.replacer, 2);
+      const buffer = Buffer.from(jsonString);
+
+      const file = bucket.file(AUTH_FILE_PATH);
+
+      await file.save(buffer, {
+        metadata: { contentType: "application/json" },
+        public: false
+      });
+
+      console.log(`💾 Credenciales guardadas en Firebase Storage (${buffer.length} bytes)`);
+    } catch (err) {
+      console.error("❌ Error al guardar credenciales en Storage:", err.message);
     }
   };
 
   return { state, saveCreds };
 }
+
+// ===============================
+// CONFIGURACIÓN DEL GRUPO PARA NOTIFICACIONES
+// ===============================
+const GROUP_ID = '120363424425387340@g.us';
+
+const db = admin.database();
+
 // ===============================
 // DATOS BASE
 // ===============================
@@ -519,14 +465,18 @@ async function obtenerTodasCitasFuturas() {
 // BOT
 // ===============================
 async function startBot() {
-  const { state, saveCreds } = await getFirebaseAuthState();
+  console.log("Intentando conectar con credenciales de Firebase Storage...");
+
+  const { state, saveCreds } = await useFirebaseStorageAuthState();
 
   const logger = pino({ level: 'silent' });
 
   const sock = makeWASocket({
     auth: state,
     printQRInTerminal: false,
-    logger
+    logger,
+    syncFullHistory: false,           // opcional, ahorra datos
+    shouldSyncHistoryMessage: () => false,
   });
 
   sock.ev.on("creds.update", saveCreds);
