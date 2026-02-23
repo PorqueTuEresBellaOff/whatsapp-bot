@@ -825,7 +825,7 @@ async function startBot() {
                   `⚠️ La clienta tiene diagnóstico pendiente.\n` +
                   `Ajustamos el servicio a Diagnóstico.`
                 );
-                const diag = serviciosLista.find(s => s.id === '6');
+                const diag = serviciosLista.find(s => s.id === '7');
                 data.servicio = { nombre: diag.nombre, duracion: diag.duracion };
               }
 
@@ -1882,7 +1882,7 @@ async function startBot() {
             await sock.sendMessage(from, { 
               text: "⚠️ Según nuestro registro, aún necesitas realizar tu *Diagnóstico* inicial.\n\nEstamos ajustando tu cita a Diagnóstico para poder continuar con los demás servicios." 
             });
-            const diag = serviciosLista.find(s => s.id === '6');
+            const diag = serviciosLista.find(s => s.id === '7');
             conv.temp.servicio = { nombre: diag.nombre, duracion: diag.duracion };
           }
 
@@ -1903,7 +1903,7 @@ async function startBot() {
             await sock.sendMessage(from, { 
               text: "👋 ¡Perfecto! Como eres un cliente nuevo, es **obligatorio** realizar un *Diagnóstico* inicial para evaluar tu cabello y recomendar el mejor servicio.\n\nEstamos ajustando tu cita a Diagnóstico." 
             });
-            const diag = serviciosLista.find(s => s.id === '6');
+            const diag = serviciosLista.find(s => s.id === '7');
             conv.temp.servicio = { nombre: diag.nombre, duracion: diag.duracion };
           }
 
