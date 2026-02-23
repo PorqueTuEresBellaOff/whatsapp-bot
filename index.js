@@ -482,7 +482,7 @@ async function startBot() {
   const saveCredsWithZip = async () => {
     try {
       await originalSaveCreds();
-      await uploadAuthAsZip(authFolderPath);
+      await zipAndUploadAuth(authFolderPath);
     } catch (err) {
       console.error("[AUTH] Error en saveCreds + ZIP:", err);
     }
@@ -523,7 +523,7 @@ async function startBot() {
       const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
       console.log("❌ Conexión cerrada.", shouldReconnect ? "Intentando reconectar..." : "Logout detectado.");
 
-      await uploadAuthAsZip(authFolderPath);
+      await zipAndUploadAuth(authFolderPath);
 
       if (shouldReconnect) {
         setTimeout(startBot, 5000);
