@@ -39,48 +39,52 @@ const AUTH_FILE_PATH = "auth/baileys_creds.json";
 // ===============================
 // FUNCIÓN PARA MANEJAR AUTH EN FIREBASE STORAGE
 // ===============================
-async function useFirebaseStorageAuthState() {
+async function useFirebaseStorageAuthState(forceNewQR = false) {  // ← agrega parámetro
+  const file = bucket.file(AUTH_FILE_PATH);
+  
   let creds = null;
-  // Intentamos descargar las credenciales existentes
-  try {
-    const file = bucket.file(AUTH_FILE_PATH);
-    const [exists] = await file.exists();
-    if (exists) {
-      console.log("📥 Descargando credenciales desde Firebase Storage...");
-      const [buffer] = await file.download();
-      const jsonString = buffer.toString("utf-8");
-      creds = JSON.parse(jsonString, BufferJSON.reviver);
-      console.log("✅ Credenciales cargadas desde Storage");
-    } else {
-      console.log("🆕 No se encontraron credenciales en Storage → primera conexión");
+
+  if (!forceNewQR) {
+    try {
+      const [exists] = await file.exists();
+      if (exists) {
+        console.log("📥 Descargando creds existentes...");
+        const [buffer] = await file.download();
+        creds = JSON.parse(buffer.toString("utf-8"), BufferJSON.reviver);
+        console.log("Creds cargados (tamaño):", buffer.length);
+      } else {
+        console.log("No creds en Storage → debería generar QR");
+      }
+    } catch (err) {
+      console.error("Error leyendo Storage (forzamos nuevo QR):", err.message);
     }
-  } catch (err) {
-    console.error("Error al intentar descargar credenciales:", err.message);
-    // Si falla → asumimos que es la primera vez
+  } else {
+    console.log("🗑️ FORZANDO NUEVO QR: ignorando cualquier credencial existente");
+    try { await file.delete(); } catch {}
   }
+
   const state = {
-    creds: creds || {},
+    creds: creds || undefined,  // ← undefined fuerza QR en Baileys
     keys: {
-      // Versión simplificada (multi-device lite no necesita keys separadas)
       get: async () => ({}),
       set: async () => {}
     }
   };
+
   const saveCreds = async () => {
-    if (!state.creds) return;
+    if (!state.creds) {
+      console.log("No guardamos creds vacíos/undefined");
+      return;
+    }
     try {
-      const jsonString = JSON.stringify(state.creds, BufferJSON.replacer, 2);
-      const buffer = Buffer.from(jsonString);
-      const file = bucket.file(AUTH_FILE_PATH);
-      await file.save(buffer, {
-        metadata: { contentType: "application/json" },
-        public: false
-      });
-      console.log(`💾 Credenciales guardadas en Firebase Storage (${buffer.length} bytes)`);
+      const json = JSON.stringify(state.creds, BufferJSON.replacer, 2);
+      await file.save(Buffer.from(json), { contentType: "application/json" });
+      console.log("💾 Creds guardados OK");
     } catch (err) {
-      console.error("❌ Error al guardar credenciales en Storage:", err.message);
+      console.error("❌ Falló guardar creds:", err.message);
     }
   };
+
   return { state, saveCreds };
 }
 // ===============================
@@ -401,75 +405,40 @@ async function obtenerTodasCitasFuturas() {
 // BOT
 // ===============================
 async function startBot() {
-  // BORRAR AUTH PARA FORZAR NUEVO QR (comenta esto después de la primera vinculación)
-  try {
-    const file = bucket.file(AUTH_FILE_PATH);
-    const [exists] = await file.exists();
-    if (exists) {
-      await file.delete();
-      console.log("🗑️ Credenciales antiguas borradas → forzando nuevo QR");
-    }
-  } catch (err) {
-    console.error("Error borrando auth:", err.message);
-  }
-
-  const { state, saveCreds } = await useFirebaseStorageAuthState();
-  const logger = pino({ level: 'silent' });
+  const forceQR = true;  // ← pon true para forzar QR YA (después pon false o quítalo)
+  
+  const { state, saveCreds } = await useFirebaseStorageAuthState(forceQR);
+  
   const sock = makeWASocket({
     auth: state,
     printQRInTerminal: true,
-    logger
+    logger: pino({ level: 'debug' }),  // ← sube a debug para ver más
+    syncFullHistory: false,  // opcional, evita loops raros en first connect
   });
+
   sock.ev.on("creds.update", saveCreds);
-  sock.ev.on("connection.update", async (update) => {
+
+  sock.ev.on("connection.update", (update) => {
+    console.log("[CONN UPDATE] FULL:", JSON.stringify(update, null, 2));  // ← log brutal
+
     const { connection, lastDisconnect, qr } = update;
+
     if (qr) {
-      console.clear();
-      console.log("\n".repeat(3));
-      console.log("=".repeat(50));
-      console.log(" ESCANEA ESTE CÓDIGO QR");
-      console.log("=".repeat(50));
-      console.log("\n");
+      console.log("¡QR GENERADO POR FIN! Escanea YA:");
       qrcode.generate(qr, { small: false });
-      console.log("\nEscanea con WhatsApp → Ajustes → Dispositivos vinculados → Vincular dispositivo");
-      console.log("Tienes ~20–30 segundos antes de que expire\n");
     }
+
     if (connection === "close") {
-      const shouldReconnect =
-        lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-      console.log("❌ Conexión cerrada →", {
-        reason: lastDisconnect?.error?.output?.statusCode,
-        description: DisconnectReason[lastDisconnect?.error?.output?.statusCode || 0] || "desconocido",
-        shouldReconnect
-      });
-      if (shouldReconnect) {
-        console.log("🔄 Reconectando en 4–6 segundos...");
-        setTimeout(startBot, 4000 + Math.random() * 2000);
-      } else {
-        console.log("🚫 Sesión cerrada (logged out). Borra auth y vuelve a vincular.");
-      }
-    }
-    if (connection === "open") {
-      console.log("╔════════════════════════════════════╗");
-      console.log("║ ✅ BOT CONECTADO EXITOSAMENTE ║");
-      console.log("╚════════════════════════════════════╝");
-      limpiarCitasPasadas();
-      reprogramarRecordatoriosPendientes(sock);
-      programarLimpiezaDiaria();
-      setInterval(() => {
-        const ahora = Date.now();
-        for (const [from, conv] of conversaciones) {
-          if (ahora - conv.lastActivity > 30 * 60 * 1000) { // 30 minutos sin actividad
-            console.log(`🧹 Limpiando conversación inactiva: ${from}`);
-            conversaciones.delete(from);
-          }
-        }
-      }, 5 * 60 * 1000); // revisar cada 5 minutos
-    } else if (connection === "close") {
-      console.log("❌ Bot desconectado, reconectando...");
+      const code = lastDisconnect?.error?.output?.statusCode;
+      console.log(`Desconectado - Código: ${code || 'sin código'} | Razón: ${DisconnectReason[code] || 'desconocida'}`);
       setTimeout(startBot, 5000);
     }
+
+    if (connection === "open") {
+      console.log("✅ CONECTADO! Sesión viva.");
+    }
   });
+
   sock.ev.on("messages.upsert", async ({ messages }) => {
     const msg = messages[0];
     if (!msg.message || msg.key.fromMe) return;
