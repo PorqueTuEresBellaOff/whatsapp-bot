@@ -34,7 +34,7 @@ if (!admin.apps.length) {
 }
 const db = admin.database();
 const storage = getStorage();
-const bucket = storage.bucket("porquetueresbellaoficial.appspot.com");
+const bucket = storage.bucket("porquetueresbellaoficial.firebasestorage.app");
 const AUTH_FILE_PATH = "auth/baileys_creds.json";
 // ===============================
 // FUNCIÓN PARA MANEJAR AUTH EN FIREBASE STORAGE
