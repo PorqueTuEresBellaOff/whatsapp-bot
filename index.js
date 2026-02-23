@@ -59,6 +59,8 @@ const serviciosLista = [
   { id: '7', key: 'DIAGNOSTICO', nombre: "Diagnóstico", duracion: 0.75 }
 ];
 
+//AGREGO MAQUILLAJE Y PEINADO
+
 const servicios = serviciosLista.reduce((acc, s) => {
   acc[s.key] = { nombre: s.nombre, duracion: s.duracion };
   return acc;
