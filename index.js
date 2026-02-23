@@ -29,12 +29,12 @@ if (!admin.apps.length) {
   const serviceAccount = JSON.parse(process.env.GOOGLE_CREDENTIALS);
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
-    databaseURL: "https://porquetueresbellaoficial-default-rtdb.firebaseio.com" // ← CAMBIAR
+    databaseURL: "https://porquetueresbellaoficial-default-rtdb.firebaseio.com"
   });
 }
 const db = admin.database();
 const storage = getStorage();
-const bucket = storage.bucket();
+const bucket = storage.bucket("porquetueresbellaoficial.appspot.com");
 const AUTH_FILE_PATH = "auth/baileys_creds.json";
 // ===============================
 // FUNCIÓN PARA MANEJAR AUTH EN FIREBASE STORAGE
