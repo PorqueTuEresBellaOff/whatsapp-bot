@@ -4,6 +4,11 @@
 // Firebase + Google Calendar
 // Citas como ARRAY dentro del cliente
 // ===============================
+import { getStorage } from "firebase-admin/storage";
+import AdmZip from 'adm-zip';
+import fs from 'fs/promises';
+import path from 'path';
+import os from 'os';
 import express from "express";
 import { Mutex } from 'async-mutex';
 import makeWASocket, {
@@ -401,15 +406,87 @@ async function obtenerTodasCitasFuturas() {
   }
 }
 
-import { useTiDBAuthState } from './auth-tidb.js';
+const BUCKET_NAME = "gs://porquetueresbellaoficial.firebasestorage.app/baileys-sessions"; // tu bucket
+const ZIP_FILE_PATH_IN_STORAGE = "baileys-auth-folder.zip";
+
+const bucket = getStorage().bucket(BUCKET_NAME);
+
+// ── Helpers ──────────────────────────────────────────────
+async function zipFolderToBuffer(folderPath) {
+  const zip = new AdmZip();
+  zip.addLocalFolder(folderPath);
+  return zip.toBuffer();
+}
+
+async function unzipBufferToFolder(buffer, targetFolder) {
+  const zip = new AdmZip(buffer);
+  await fs.mkdir(targetFolder, { recursive: true });
+  zip.extractAllTo(targetFolder, true);
+}
+
+// ── Cargar auth desde ZIP en Storage ─────────────────────
+async function downloadAndUnzipAuth() {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'baileys-auth-'));
+  const file = bucket.file(ZIP_FILE_PATH_IN_STORAGE);
+
+  try {
+    const [exists] = await file.exists();
+    if (!exists) {
+      console.log("No existe ZIP en Storage → creando auth nuevo");
+      return tempDir; // carpeta vacía
+    }
+
+    const [buffer] = await file.download();
+    await unzipBufferToFolder(buffer, tempDir);
+    console.log(`Auth restaurado desde ZIP → ${tempDir}`);
+    return tempDir;
+  } catch (err) {
+    console.error("Error descargando/descomprimiendo ZIP:", err);
+    return tempDir; // fallback a nuevo
+  }
+}
+
+// ── Guardar carpeta como ZIP en Storage ──────────────────
+async function zipAndUploadAuth(folderPath) {
+  try {
+    const zipBuffer = await zipFolderToBuffer(folderPath);
+    const file = bucket.file(ZIP_FILE_PATH_IN_STORAGE);
+
+    await file.save(zipBuffer, {
+      contentType: 'application/zip',
+      metadata: { cacheControl: 'no-store, no-cache, must-revalidate' },
+    });
+
+    console.log("Carpeta auth comprimida y subida como ZIP a Storage");
+  } catch (err) {
+    console.error("Error subiendo ZIP a Storage:", err);
+  }
+}
 // ===============================
 // BOT
 // ===============================
 async function startBot() {
-  
-  const { state, saveCreds } = await useTiDBAuthState('whatsapp_bot_principal');
+  let authFolderPath;
+
+  try {
+    authFolderPath = await restoreAuthFromStorage();
+  } catch (err) {
+    console.error("[FATAL] No se pudo preparar carpeta auth. Usando temporal vacía.", err);
+    authFolderPath = await fs.mkdtemp(path.join(os.tmpdir(), 'baileys-fallback-'));
+  }
 
   const logger = pino({ level: 'silent' });
+
+  const { state, saveCreds: originalSaveCreds } = await useMultiFileAuthState(authFolderPath);
+
+  const saveCredsWithZip = async () => {
+    try {
+      await originalSaveCreds();
+      await uploadAuthAsZip(authFolderPath);
+    } catch (err) {
+      console.error("[AUTH] Error en saveCreds + ZIP:", err);
+    }
+  };
 
   const sock = makeWASocket({
     auth: state,
@@ -417,30 +494,40 @@ async function startBot() {
     logger
   });
 
-  sock.ev.on("creds.update", saveCreds);
+  sock.ev.on("creds.update", saveCredsWithZip);
 
-  sock.ev.on("connection.update", ({ connection, qr }) => {
+  sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
     if (qr) {
       console.log("🔗 Escanea este QR con tu WhatsApp:");
       qrcode.generate(qr, { small: true });
     }
+
     if (connection === "open") {
       console.log("✅ Bot conectado exitosamente");
       limpiarCitasPasadas();
       reprogramarRecordatoriosPendientes(sock);
       programarLimpiezaDiaria();
+
       setInterval(() => {
         const ahora = Date.now();
         for (const [from, conv] of conversaciones) {
-          if (ahora - conv.lastActivity > 30 * 60 * 1000) { // 30 minutos sin actividad
+          if (ahora - conv.lastActivity > 30 * 60 * 1000) {
             console.log(`🧹 Limpiando conversación inactiva: ${from}`);
             conversaciones.delete(from);
           }
         }
-      }, 5 * 60 * 1000); // revisar cada 5 minutos
-    } else if (connection === "close") {
-      console.log("❌ Bot desconectado, reconectando...");
-      setTimeout(startBot, 5000);
+      }, 5 * 60 * 1000);
+    }
+
+    if (connection === "close") {
+      const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
+      console.log("❌ Conexión cerrada.", shouldReconnect ? "Intentando reconectar..." : "Logout detectado.");
+
+      await uploadAuthAsZip(authFolderPath);
+
+      if (shouldReconnect) {
+        setTimeout(startBot, 5000);
+      }
     }
   });
 
