@@ -469,10 +469,10 @@ async function startBot() {
   let authFolderPath;
 
   try {
-    authFolderPath = await restoreAuthFromStorage();
+    authFolderPath = await downloadAndUnzipAuth();
   } catch (err) {
-    console.error("[FATAL] No se pudo preparar carpeta auth. Usando temporal vacía.", err);
-    authFolderPath = await fs.mkdtemp(path.join(os.tmpdir(), 'baileys-fallback-'));
+      console.error("[FATAL] No se pudo preparar carpeta auth. Usando temporal vacía.", err);
+      authFolderPath = await fs.mkdtemp(path.join(os.tmpdir(), 'baileys-fallback-'));
   }
 
   const logger = pino({ level: 'silent' });
