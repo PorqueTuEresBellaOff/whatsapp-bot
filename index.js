@@ -1,52 +1,50 @@
 // ===============================
 // BOT WHATSAPP – PORQUE TÚ ERES BELLA
-// Baileys + Firebase Storage para guardar auth (credenciales)
+// Baileys ACTUAL (SOLO RESPUESTAS DE TEXTO)
+// Firebase + Google Calendar
+// Citas como ARRAY dentro del cliente
 // ===============================
-
 import express from "express";
 import { Mutex } from 'async-mutex';
 import makeWASocket, {
   DisconnectReason,
   BufferJSON
 } from "@whiskeysockets/baileys";
-
 import qrcode from "qrcode-terminal";
-import pino from "pino";
-
-import admin from "firebase-admin";
-import { getStorage } from "firebase-admin/storage";
-
+import pino from "pino"; // Logger
 import { crearEvento, eliminarEvento } from "./googleCalendar.js";
 import { obtenerHorasDisponibles, estaHoraDisponibleAhora } from "./disponibilidad.js";
-
 // ===============================
-// FIREBASE INICIALIZACIÓN
+// CONFIGURACIÓN DEL GRUPO PARA NOTIFICACIONES Y MODO ADMIN
 // ===============================
+const GROUP_ID = '120363424425387340@g.us'; // ← CAMBIAR AQUÍ: Reemplaza con el ID real de tu grupo
+// NOTA: Ahora CUALQUIER mensaje enviado a este grupo se considera comando ADMIN
+// No se necesita lista de números administradores
+// ===============================
+// FIREBASE
+// ===============================
+import admin from "firebase-admin";
+import { getStorage } from "firebase-admin/storage";
 if (!admin.apps.length) {
   const serviceAccount = JSON.parse(process.env.GOOGLE_CREDENTIALS);
-
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
-    databaseURL: "https://porquetueresbellaoficial-default-rtdb.firebaseio.com",
-    storageBucket: "porquetueresbellaoficial.firebasestorage.app"
+    databaseURL: "https://porquetueresbellaoficial-default-rtdb.firebaseio.com" // ← CAMBIAR
   });
 }
-
+const db = admin.database();
 const storage = getStorage();
 const bucket = storage.bucket();
 const AUTH_FILE_PATH = "auth/baileys_creds.json";
-
 // ===============================
 // FUNCIÓN PARA MANEJAR AUTH EN FIREBASE STORAGE
 // ===============================
 async function useFirebaseStorageAuthState() {
   let creds = null;
-
   // Intentamos descargar las credenciales existentes
   try {
     const file = bucket.file(AUTH_FILE_PATH);
     const [exists] = await file.exists();
-
     if (exists) {
       console.log("📥 Descargando credenciales desde Firebase Storage...");
       const [buffer] = await file.download();
@@ -60,7 +58,6 @@ async function useFirebaseStorageAuthState() {
     console.error("Error al intentar descargar credenciales:", err.message);
     // Si falla → asumimos que es la primera vez
   }
-
   const state = {
     creds: creds || {},
     keys: {
@@ -69,37 +66,23 @@ async function useFirebaseStorageAuthState() {
       set: async () => {}
     }
   };
-
   const saveCreds = async () => {
     if (!state.creds) return;
-
     try {
       const jsonString = JSON.stringify(state.creds, BufferJSON.replacer, 2);
       const buffer = Buffer.from(jsonString);
-
       const file = bucket.file(AUTH_FILE_PATH);
-
       await file.save(buffer, {
         metadata: { contentType: "application/json" },
         public: false
       });
-
       console.log(`💾 Credenciales guardadas en Firebase Storage (${buffer.length} bytes)`);
     } catch (err) {
       console.error("❌ Error al guardar credenciales en Storage:", err.message);
     }
   };
-
   return { state, saveCreds };
 }
-
-// ===============================
-// CONFIGURACIÓN DEL GRUPO PARA NOTIFICACIONES
-// ===============================
-const GROUP_ID = '120363424425387340@g.us';
-
-const db = admin.database();
-
 // ===============================
 // DATOS BASE
 // ===============================
@@ -111,44 +94,36 @@ const serviciosLista = [
   { id: '5', key: 'TRATAMIENTO_DISC', nombre: "Tratamiento disciplinante", duracion: 4 },
   { id: '6', key: 'DIAGNOSTICO', nombre: "Diagnóstico", duracion: 0.75 }
 ];
-
 const servicios = serviciosLista.reduce((acc, s) => {
   acc[s.key] = { nombre: s.nombre, duracion: s.duracion };
   return acc;
 }, {});
-
 const serviciosPorNombre = serviciosLista.reduce((acc, s) => {
   acc[s.nombre.toUpperCase()] = s;
   return acc;
 }, {});
-
 const empleadosLista = [
   { id: '1', key: 'CARLOS', nombre: "Carlos" },
   { id: '2', key: 'ARTURO', nombre: "Arturo" }
 ];
-
 const empleados = empleadosLista.reduce((acc, e) => {
   acc[e.key] = { nombre: e.nombre };
   return acc;
 }, {});
-
 // ===============================
 // MEMORIA
 // ===============================
 const conversaciones = new Map();
 const adminState = {}; // solo tendrá clave = GROUP_ID
 const recordatoriosActivos = {};
-
 // Al inicio del archivo, junto con los otros Maps
-const conversationMutexes = new Map();  // mapa: número → candado
-
+const conversationMutexes = new Map(); // mapa: número → candado
 function getConversationMutex(from) {
   if (!conversationMutexes.has(from)) {
-    conversationMutexes.set(from, new Mutex());  // nuevo candado solo para este usuario
+    conversationMutexes.set(from, new Mutex()); // nuevo candado solo para este usuario
   }
   return conversationMutexes.get(from);
 }
-
 function getConversacion(from) {
   if (!conversaciones.has(from)) {
     conversaciones.set(from, {
@@ -161,7 +136,6 @@ function getConversacion(from) {
   conv.lastActivity = Date.now(); // actualizamos actividad
   return conv;
 }
-
 // ===============================
 // UTILIDADES
 // ===============================
@@ -173,7 +147,6 @@ function formatearDuracion(horas) {
   if (m > 0) t += ` ${m} minuto${m > 1 ? "s" : ""}`;
   return t || "0 minutos";
 }
-
 function formatearFecha(fecha) {
   return fecha.toLocaleDateString("es-CO", {
     weekday: 'long',
@@ -182,20 +155,16 @@ function formatearFecha(fecha) {
     day: 'numeric'
   });
 }
-
 function programarRecordatorio(sock, numeroCompletoCliente, cita, clienteData) {
   if (!cita || !cita.inicio || !cita.eventId) {
     console.warn("Intento de programar recordatorio con cita inválida:", cita);
     return null;
   }
- 
   const key = cita.eventId;
- 
   const fechaCita = new Date(cita.inicio);
   const ahora = new Date();
   if (fechaCita <= ahora) return null;
   if (cita.recordatorioEnviado === true) return null;
-
   // Rechazar si la cita está a más de 20 días en el futuro
   const maxDelayDias = 20;
   const maxDelayMs = maxDelayDias * 24 * 60 * 60 * 1000;
@@ -203,7 +172,6 @@ function programarRecordatorio(sock, numeroCompletoCliente, cita, clienteData) {
     console.log(`Recordatorio rechazado para cita en más de ${maxDelayDias} días: ${key}`);
     return null;
   }
-
   // ── 2 horas antes ────────────────────────────────
   const dosHorasAntes = new Date(fechaCita.getTime() - 2 * 60 * 60 * 1000);
   const faltanMenosDe2Horas = ahora >= dosHorasAntes;
@@ -237,7 +205,7 @@ function programarRecordatorio(sock, numeroCompletoCliente, cita, clienteData) {
                         `📅 ${formatearFecha(fechaCita)}\n` +
                         `🕐 ${fechaCita.toLocaleTimeString("es-CO", { hour: '2-digit', minute: '2-digit', hour12: true })}\n\n` +
                         `¡Te esperamos! 💖 \n\n` +
-                        'Si deseas cancelarla puedes entrar a la seccion "Consultar cita" ezcribiendo "MENU" y luego "2" \n\n' + 
+                        'Si deseas cancelarla puedes entrar a la seccion "Consultar cita" ezcribiendo "MENU" y luego "2" \n\n' +
                         'Recuerda que estamos ubicados en la Carrera 19 # 70A - 31 edificio alexandra 301, Barrios Unidos, Chapinero centrar, Bogotá D.C.';
       }
       await sock.sendMessage(numeroCompletoCliente, { text: mensajeCliente });
@@ -267,54 +235,42 @@ function programarRecordatorio(sock, numeroCompletoCliente, cita, clienteData) {
       delete recordatoriosActivos[key];
     }
   }, delay);
- 
   recordatoriosActivos[key] = timeoutId;
   return timeoutId;
 }
-
 function programarLimpiezaDiaria() {
   const ahora = new Date();
   const medianoche = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate() + 1, 0, 0, 0);
   const delay = medianoche.getTime() - ahora.getTime();
-
   setTimeout(() => {
     limpiarCitasPasadas();
     programarLimpiezaDiaria(); // Recursivo para el próximo día
   }, delay);
 }
-
 async function limpiarCitasPasadas() {
   console.log("🧹 Iniciando limpieza de citas pasadas...");
-
   try {
     const clientesSnap = await db.ref('clientes').once('value');
     if (!clientesSnap.exists()) return;
-
     let eliminadas = 0;
-
     const clientesData = clientesSnap.val() || {};
-
     for (const [cedula, cliente] of Object.entries(clientesData)) {
       if (!cliente?.citas || !Array.isArray(cliente.citas)) {
         console.warn(`Cliente ${cedula} no tiene citas válidas (no es array)`);
         continue;
       }
-
       const citasActualizadas = [];
       let huboCambios = false;
-
       for (const cita of cliente.citas) {
         if (!cita || typeof cita !== 'object' || !cita.inicio) {
           console.warn(`Cita inválida encontrada y omitida para cliente ${cedula}:`, cita);
           huboCambios = true;
           continue;
         }
-
         if (new Date(cita.inicio) > new Date()) {
           citasActualizadas.push(cita);
           continue;
         }
-
         if (cita.eventId) {
           try {
             await eliminarEvento(cita.eventId, cita.empleado);
@@ -327,11 +283,9 @@ async function limpiarCitasPasadas() {
             console.warn(`No se pudo eliminar evento GC ${cita.eventId}:`, err.message);
           }
         }
-
         eliminadas++;
         huboCambios = true;
       }
-
       if (huboCambios) {
         await db.ref(`clientes/${cedula}`).update({
           citas: citasActualizadas
@@ -339,24 +293,20 @@ async function limpiarCitasPasadas() {
         console.log(`Cliente ${cedula} actualizado - ${citasActualizadas.length} citas restantes`);
       }
     }
-
     console.log(`Limpieza finalizada. Eliminadas ${eliminadas} citas pasadas.`);
   } catch (err) {
     console.error("Error limpiando citas pasadas:", err);
   }
 }
-
 async function obtenerCitasExistentes(cedula) {
   const clienteRef = db.ref(`clientes/${cedula}`);
   const snapshot = await clienteRef.once('value');
-  
+ 
   if (!snapshot.exists()) {
     return [];
   }
-
   const data = snapshot.val();
   const citasArray = data.citas || [];
-
   const futuras = citasArray
     .map((cita, index) => ({
       ...cita,
@@ -364,39 +314,32 @@ async function obtenerCitasExistentes(cedula) {
     }))
     .filter(cita => new Date(cita.inicio) > new Date())
     .sort((a, b) => new Date(a.inicio) - new Date(b.inicio));
-
   return futuras;
 }
-
 async function tieneDiagnosticoPendiente(cedula) {
   const clienteRef = db.ref(`clientes/${cedula}`);
   const snapshot = await clienteRef.once('value');
-  
+ 
   if (!snapshot.exists()) {
     return false;
   }
-
   const data = snapshot.val();
   const citas = data.citas || [];
-
-  return citas.some(cita => 
-    new Date(cita.inicio) > new Date() && 
+  return citas.some(cita =>
+    new Date(cita.inicio) > new Date() &&
     cita.servicio === "Diagnóstico"
   );
 }
-
 async function requiereDiagnostico(cedula) {
   const clienteRef = db.ref(`clientes/${cedula}`);
   const snapshot = await clienteRef.once('value');
-  
+ 
   if (!snapshot.exists()) {
     return true;
   }
-
   const data = snapshot.val();
   return data.requiereDiagnostico === true;
 }
-
 async function reprogramarRecordatoriosPendientes(sock) {
   console.log("🔄 Reprogramando recordatorios pendientes...");
   try {
@@ -426,19 +369,15 @@ async function reprogramarRecordatoriosPendientes(sock) {
     setTimeout(() => reprogramarRecordatoriosPendientes(sock), 24 * 60 * 60 * 1000);
   }
 }
-
 // Nueva función: Obtener TODAS las citas futuras (para admins)
 async function obtenerTodasCitasFuturas() {
   try {
     const snapshot = await db.ref('clientes').once('value');
     if (!snapshot.exists()) return [];
-
     const todasCitas = [];
-
     snapshot.forEach((clienteSnap) => {
       const cliente = clienteSnap.val();
       const cedula = clienteSnap.key;
-
       if (cliente.citas && Array.isArray(cliente.citas)) {
         cliente.citas.forEach(cita => {
           if (new Date(cita.inicio) > new Date() && cita.estado === "confirmada") {
@@ -452,75 +391,67 @@ async function obtenerTodasCitasFuturas() {
         });
       }
     });
-
     return todasCitas.sort((a, b) => new Date(a.inicio) - new Date(b.inicio));
   } catch (err) {
     console.error("Error obteniendo todas las citas futuras:", err);
     return [];
   }
 }
-
 // ===============================
 // BOT
 // ===============================
 async function startBot() {
-  console.log("Intentando conectar con credenciales de Firebase Storage...");
+  // BORRAR AUTH PARA FORZAR NUEVO QR (comenta esto después de la primera vinculación)
+  try {
+    const file = bucket.file(AUTH_FILE_PATH);
+    const [exists] = await file.exists();
+    if (exists) {
+      await file.delete();
+      console.log("🗑️ Credenciales antiguas borradas → forzando nuevo QR");
+    }
+  } catch (err) {
+    console.error("Error borrando auth:", err.message);
+  }
 
   const { state, saveCreds } = await useFirebaseStorageAuthState();
-
   const logger = pino({ level: 'silent' });
-
   const sock = makeWASocket({
     auth: state,
     printQRInTerminal: true,
-    logger,
-    syncFullHistory: false,           // opcional, ahorra datos
-    shouldSyncHistoryMessage: () => false,
+    logger
   });
-
   sock.ev.on("creds.update", saveCreds);
-
   sock.ev.on("connection.update", async (update) => {
-    const { connection, lastDisconnect, qr, isNewLogin } = update;
-
+    const { connection, lastDisconnect, qr } = update;
     if (qr) {
-      console.clear(); // opcional: limpia la terminal para que se vea mejor
+      console.clear();
       console.log("\n".repeat(3));
       console.log("=".repeat(50));
-      console.log("       ESCANEA ESTE CÓDIGO QR");
+      console.log(" ESCANEA ESTE CÓDIGO QR");
       console.log("=".repeat(50));
       console.log("\n");
-
-      // Imprime el QR en terminal (grande y legible)
-      qrcode.generate(qr, { small: false });   // small: false → más grande
-
+      qrcode.generate(qr, { small: false });
       console.log("\nEscanea con WhatsApp → Ajustes → Dispositivos vinculados → Vincular dispositivo");
       console.log("Tienes ~20–30 segundos antes de que expire\n");
     }
-
     if (connection === "close") {
       const shouldReconnect =
         lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-
       console.log("❌ Conexión cerrada →", {
         reason: lastDisconnect?.error?.output?.statusCode,
         description: DisconnectReason[lastDisconnect?.error?.output?.statusCode || 0] || "desconocido",
         shouldReconnect
       });
-
       if (shouldReconnect) {
         console.log("🔄 Reconectando en 4–6 segundos...");
         setTimeout(startBot, 4000 + Math.random() * 2000);
       } else {
         console.log("🚫 Sesión cerrada (logged out). Borra auth y vuelve a vincular.");
-        // Opcional: borrar el archivo de auth para forzar nuevo QR la próxima vez
-        // await bucket.file(AUTH_FILE_PATH).delete().catch(() => {});
       }
     }
-
     if (connection === "open") {
       console.log("╔════════════════════════════════════╗");
-      console.log("║     ✅ BOT CONECTADO EXITOSAMENTE   ║");
+      console.log("║ ✅ BOT CONECTADO EXITOSAMENTE ║");
       console.log("╚════════════════════════════════════╝");
       limpiarCitasPasadas();
       reprogramarRecordatoriosPendientes(sock);
@@ -539,155 +470,125 @@ async function startBot() {
       setTimeout(startBot, 5000);
     }
   });
-
   sock.ev.on("messages.upsert", async ({ messages }) => {
     const msg = messages[0];
     if (!msg.message || msg.key.fromMe) return;
-
     const from = msg.key.remoteJid;
-
     const release = await getConversationMutex(from).acquire();
-
     try{
       console.log("ID del remitente:", from);
       const conv = getConversacion(from);
-
-      const originalText = msg.message.conversation?.trim() || 
+      const originalText = msg.message.conversation?.trim() ||
                           msg.message.extendedTextMessage?.text?.trim() || '';
-
       const respuesta = originalText.toUpperCase().trim();
-
       if (!respuesta) return;
-
       console.log(`📱 Mensaje desde ${from}: ${originalText}`);
-
       const esGrupoAdmin = from === GROUP_ID;
-
       // Posibles valores de adminState[GROUP_ID]
       const ADMIN_MODES = {
-        MAIN:          'main',
-        LIST_CITAS:    'list_citas',
+        MAIN: 'main',
+        LIST_CITAS: 'list_citas',
         CANCEL_SELECT: 'cancel_select',
         CANCEL_CONFIRM:'cancel_confirm',
-        BLOCK_WHO:     'block_who',
-        BLOCK_DATE:    'block_date',
-        BLOCK_TYPE:    'block_type',     // todo el día o rango
-        BLOCK_RANGE:   'block_range',    // pidiendo las dos horas
+        BLOCK_WHO: 'block_who',
+        BLOCK_DATE: 'block_date',
+        BLOCK_TYPE: 'block_type', // todo el día o rango
+        BLOCK_RANGE: 'block_range', // pidiendo las dos horas
         BLOCK_CONFIRM: 'block_confirm',
-        AGENDAR_START:      'agendar_start',
-        AGENDAR_CEDULA:     'agendar_cedula',
-        AGENDAR_SERVICIO:   'agendar_servicio',
-        AGENDAR_EMPLEADO:   'agendar_empleado',
-        AGENDAR_NOMBRE:     'agendar_nombre',
-        AGENDAR_CELULAR:    'agendar_celular',
-        AGENDAR_CONFIRMAR:  'agendar_confirmar',
-        AGENDAR_MES:        'agendar_mes',
-        AGENDAR_SEMANA:     'agendar_semana',
-        AGENDAR_DIA:        'agendar_dia',
-        AGENDAR_HORA:       'agendar_hora'
+        AGENDAR_START: 'agendar_start',
+        AGENDAR_CEDULA: 'agendar_cedula',
+        AGENDAR_SERVICIO: 'agendar_servicio',
+        AGENDAR_EMPLEADO: 'agendar_empleado',
+        AGENDAR_NOMBRE: 'agendar_nombre',
+        AGENDAR_CELULAR: 'agendar_celular',
+        AGENDAR_CONFIRMAR: 'agendar_confirmar',
+        AGENDAR_MES: 'agendar_mes',
+        AGENDAR_SEMANA: 'agendar_semana',
+        AGENDAR_DIA: 'agendar_dia',
+        AGENDAR_HORA: 'agendar_hora'
       };
       // ===============================
       // COMANDOS ADMIN (solo en el grupo)
       // Cualquier mensaje en el grupo se considera comando admin
       // ===============================
       // ────────────────────────────────────────────────
-      //          NUEVO MANEJO DE ADMIN – MENÚ INTERACTIVO
+      // NUEVO MANEJO DE ADMIN – MENÚ INTERACTIVO
       // ────────────────────────────────────────────────
-
       // ===============================
       // COMANDOS ADMIN (solo en el grupo)
       // Cualquier mensaje en el grupo se considera comando admin
       // ===============================
       if (esGrupoAdmin) {
         const groupId = from;
-
         if (!adminState[groupId]) {
           adminState[groupId] = { mode: 'main', data: {} };
         }
-
         let text = (msg.message.conversation || msg.message.extendedTextMessage?.text || '').trim();
         const textUpper = text.toUpperCase();
-
         console.log(`[ADMIN] Modo: ${adminState[groupId].mode} | Texto recibido: "${text}" (${textUpper})`);
-
         const sendAdmin = async (txt) => {
           await sock.sendMessage(groupId, { text: txt });
         };
-
         // ── Comandos de escape / volver (prioridad máxima) ────────────────────────────────
         if (["MENU", "INICIO", "VOLVER", "ATRAS", "0"].includes(textUpper)) {
           adminState[groupId].mode = 'main';
           adminState[groupId].data = {};
-          
-          const menuText = 
+         
+          const menuText =
                 `🛠️ *MENÚ ADMINISTRACIÓN – Porque Tú Eres Bella*\n\n` +
                 `¿Qué deseas hacer?\n\n` +
                 `1️⃣ Ver todas las citas futuras\n` +
                 `2️⃣ Cancelar una cita\n` +
                 `3️⃣ Bloquear agenda de estilista(s)\n` +
-                `4️⃣ Agendar cita para una clienta\n` +   // ← NUEVA LÍNEA
-                `5️⃣ Ayuda rápida\n\n` +                   // ← Cambia 4 → 5
-                `Escribe solo el número (1-5)\n` +         // ← Cambia 1-4 → 1-5
+                `4️⃣ Agendar cita para una clienta\n` + // ← NUEVA LÍNEA
+                `5️⃣ Ayuda rápida\n\n` + // ← Cambia 4 → 5
+                `Escribe solo el número (1-5)\n` + // ← Cambia 1-4 → 1-5
                 `• Escribe MENU en cualquier momento para volver aquí`;
-
           await sendAdmin(menuText);
           return;
         }
-
         const currentMode = adminState[groupId].mode;
-
         // ── MODO PRINCIPAL ───────────────────────────────────────────────────────────────
         if (currentMode === 'main') {
           if (textUpper === '1') {
             adminState[groupId].mode = 'list_citas';
-
             const todas = await obtenerTodasCitasFuturas();
-
             if (todas.length === 0) {
               await sendAdmin("📅 No hay citas futuras registradas en este momento.\n\nEscribe MENU para volver.");
               adminState[groupId].mode = 'main';
               return;
             }
-
             let txt = "📅 *CITAS CONFIRMADAS FUTURAS* (ordenadas por fecha)\n\n";
             todas.forEach((c, i) => {
               const fecha = new Date(c.inicio);
               txt += `${i+1}. ${c.nombre} (${c.cedula})\n`;
-              txt += `   • ${c.servicio}\n`;
-              txt += `   • ${c.empleado}\n`;
-              txt += `   • ${formatearFecha(fecha)} ${fecha.toLocaleTimeString("es-CO", {hour:'2-digit', minute:'2-digit'})}\n\n`;
+              txt += ` • ${c.servicio}\n`;
+              txt += ` • ${c.empleado}\n`;
+              txt += ` • ${formatearFecha(fecha)} ${fecha.toLocaleTimeString("es-CO", {hour:'2-digit', minute:'2-digit'})}\n\n`;
             });
-
             txt += "Escribe MENU para volver al menú principal.";
             await sendAdmin(txt);
             return;
           }
-
           if (textUpper === '2') {
             adminState[groupId].mode = 'cancel_select';
-
             const todas = await obtenerTodasCitasFuturas();
-
             if (todas.length === 0) {
               await sendAdmin("No hay citas para cancelar en este momento.\n\nEscribe MENU para volver.");
               adminState[groupId].mode = 'main';
               return;
             }
-
             let txt = "❌ *SELECCIONA LA CITA A CANCELAR*\n\n";
             todas.forEach((c, i) => {
               const fecha = new Date(c.inicio);
               txt += `${i+1}) ${c.nombre} (${c.cedula}) – ${c.servicio} con ${c.empleado}\n`;
-              txt += `    ${formatearFecha(fecha)} ${fecha.toLocaleTimeString("es-CO", {hour:'2-digit', minute:'2-digit'})}\n\n`;
+              txt += ` ${formatearFecha(fecha)} ${fecha.toLocaleTimeString("es-CO", {hour:'2-digit', minute:'2-digit'})}\n\n`;
             });
-
             txt += "Escribe el **número** de la cita que deseas cancelar\n";
             txt += "o escribe MENU para volver";
-
             await sendAdmin(txt);
             return;
           }
-
           if (textUpper === '3') {
             adminState[groupId].mode = 'block_who';
             await sendAdmin(
@@ -700,7 +601,6 @@ async function startBot() {
             );
             return;
           }
-
           if (textUpper === '4') {
             adminState[groupId].mode = ADMIN_MODES.AGENDAR_START;
             adminState[groupId].data = {
@@ -709,7 +609,7 @@ async function startBot() {
               celular: null,
               servicio: null,
               empleado: null,
-              temp: {},           // simula el temp del flujo cliente
+              temp: {}, // simula el temp del flujo cliente
               mesesDisponibles: null,
               semanasDelMes: null,
               dias: null,
@@ -717,7 +617,6 @@ async function startBot() {
               esNuevoCliente: null,
               requiereDiagnostico: null
             };
-
             await sendAdmin(
               `📅 *Modo agendamiento completo para clienta*\n\n` +
               `Vamos a seguir **exactamente** el mismo proceso que una clienta.\n\n` +
@@ -726,7 +625,6 @@ async function startBot() {
             );
             return;
           }
-
           if (textUpper === '5') {
             await sendAdmin(
               `🆘 *AYUDA RÁPIDA ADMIN*\n\n` +
@@ -738,19 +636,16 @@ async function startBot() {
             );
             return;
           }
-
           // Respuesta inválida en modo main
           await sendAdmin("Por favor escribe solo el número de la opción (1,2,3,4)\nO MENU para refrescar el menú.");
           return;
         }
-
         // ────────────────────────────────────────────────
-        //     FLUJO COMPLETO DE AGENDAMIENTO DESDE ADMIN
+        // FLUJO COMPLETO DE AGENDAMIENTO DESDE ADMIN
         // ────────────────────────────────────────────────
         if (currentMode.startsWith('agendar_') || currentMode === ADMIN_MODES.AGENDAR_START) {
           const data = adminState[groupId].data;
           const upper = text.toUpperCase().trim();
-
           // ── ESCAPE ───────────────────────────────────────
           if (["MENU", "INICIO", "VOLVER", "ATRAS", "0"].includes(upper)) {
             adminState[groupId].mode = 'main';
@@ -758,7 +653,6 @@ async function startBot() {
             await sendAdmin("Modo agendamiento cancelado. Volviste al menú principal.");
             return;
           }
-
           // ── AGENDAR_START → pedir cédula ─────────────────
           if (currentMode === ADMIN_MODES.AGENDAR_START) {
             if (!/^\d{5,}$/.test(text)) {
@@ -767,11 +661,9 @@ async function startBot() {
             }
             data.cedula = text.trim();
             adminState[groupId].mode = ADMIN_MODES.AGENDAR_SERVICIO;
-
-            const listaServicios = serviciosLista.map(s => 
+            const listaServicios = serviciosLista.map(s =>
               `${s.id}️⃣ ${s.nombre} - ${formatearDuracion(s.duracion)}`
             ).join('\n');
-
             await sendAdmin(
               `Cédula: ${data.cedula}\n\n` +
               `Paso 2 → Selecciona el servicio:\n\n${listaServicios}\n\n` +
@@ -779,7 +671,6 @@ async function startBot() {
             );
             return;
           }
-
           // ── AGENDAR_SERVICIO ─────────────────────────────
           if (currentMode === ADMIN_MODES.AGENDAR_SERVICIO) {
             const sel = serviciosLista.find(s => s.id === text.trim());
@@ -789,11 +680,9 @@ async function startBot() {
             }
             data.servicio = { nombre: sel.nombre, duracion: sel.duracion };
             adminState[groupId].mode = ADMIN_MODES.AGENDAR_EMPLEADO;
-
-            const listaEmpleados = empleadosLista.map(e => 
+            const listaEmpleados = empleadosLista.map(e =>
               `${e.id}️⃣ ${e.nombre}`
             ).join('\n');
-
             await sendAdmin(
               `Servicio: ${data.servicio.nombre}\n\n` +
               `Paso 3 → Elige estilista:\n\n${listaEmpleados}\n\n` +
@@ -801,7 +690,6 @@ async function startBot() {
             );
             return;
           }
-
           // ── AGENDAR_EMPLEADO ─────────────────────────────
           if (currentMode === ADMIN_MODES.AGENDAR_EMPLEADO) {
             const sel = empleadosLista.find(e => e.id === text.trim());
@@ -810,12 +698,10 @@ async function startBot() {
               return;
             }
             data.empleado = { nombre: sel.nombre };
-            adminState[groupId].mode = ADMIN_MODES.AGENDAR_CEDULA;  // ya tenemos cédula, pero verificamos cliente
-
+            adminState[groupId].mode = ADMIN_MODES.AGENDAR_CEDULA; // ya tenemos cédula, pero verificamos cliente
             // Verificamos si existe el cliente (igual que en flujo normal)
             const clienteRef = db.ref(`clientes/${data.cedula}`);
             const snap = await clienteRef.once('value');
-
             if (snap.exists()) {
               const cliente = snap.val();
               data.nombre = cliente.nombre || "Cliente";
@@ -823,7 +709,6 @@ async function startBot() {
               data.temp.nombre = data.nombre;
               data.temp.celular = data.celular;
               data.temp.cedula = data.cedula;
-
               // Chequeo diagnóstico pendiente
               const hasPending = await tieneDiagnosticoPendiente(data.cedula);
               if (hasPending && data.servicio.nombre !== "Diagnóstico") {
@@ -834,7 +719,6 @@ async function startBot() {
                 const diag = serviciosLista.find(s => s.id === '6');
                 data.servicio = { nombre: diag.nombre, duracion: diag.duracion };
               }
-
               adminState[groupId].mode = ADMIN_MODES.AGENDAR_CONFIRMAR;
               await sendAdmin(
                 `Cliente encontrado:\n` +
@@ -853,7 +737,6 @@ async function startBot() {
             }
             return;
           }
-
           // ── AGENDAR_NOMBRE (nueva clienta) ───────────────
           if (currentMode === ADMIN_MODES.AGENDAR_NOMBRE) {
             if (text.trim().length < 2) {
@@ -869,7 +752,6 @@ async function startBot() {
             );
             return;
           }
-
           // ── AGENDAR_CELULAR ──────────────────────────────
           if (currentMode === ADMIN_MODES.AGENDAR_CELULAR) {
             if (!/^\d{10}$/.test(text.trim())) {
@@ -878,7 +760,6 @@ async function startBot() {
             }
             data.celular = text.trim();
             data.temp.celular = data.celular;
-
             // Guardamos cliente nuevo (igual que flujo normal)
             const clienteRef = db.ref(`clientes/${data.cedula}`);
             await clienteRef.set({
@@ -887,33 +768,29 @@ async function startBot() {
               citas: [],
               requiereDiagnostico: data.servicio.nombre === "Diagnóstico"
             });
-
             adminState[groupId].mode = ADMIN_MODES.AGENDAR_CONFIRMAR;
             await sendAdmin(
               `Datos registrados:\n\n` +
-              `Cédula:   ${data.cedula}\n` +
-              `Nombre:   ${data.nombre}\n` +
-              `Celular:  ${data.celular}\n` +
+              `Cédula: ${data.cedula}\n` +
+              `Nombre: ${data.nombre}\n` +
+              `Celular: ${data.celular}\n` +
               `Servicio: ${data.servicio.nombre}\n` +
               `Estilista:${data.empleado.nombre}\n\n` +
               `Escribe SI para continuar a elegir fecha/hora`
             );
             return;
           }
-
           // ── AGENDAR_CONFIRMAR (cliente existente o nuevo) ─
           if (currentMode === ADMIN_MODES.AGENDAR_CONFIRMAR) {
             if (["SI", "SÍ"].includes(upper)) {
               // Iniciamos selección de mes (igual que cliente)
               const meses = obtenerMesesProximos(4);
               data.mesesDisponibles = meses;
-
               let texto = `📅 *Selecciona el mes*\n\n`;
               meses.forEach(m => {
                 texto += `${m.indice + 1}️⃣ ${m.nombre.charAt(0).toUpperCase() + m.nombre.slice(1)}\n`;
               });
               texto += "\nEscribe el número del mes";
-
               await sendAdmin(texto);
               adminState[groupId].mode = ADMIN_MODES.AGENDAR_MES;
               return;
@@ -925,7 +802,6 @@ async function startBot() {
             await sendAdmin("Escribe SI o NO.");
             return;
           }
-
           // ── AGENDAR_MES ──────────────────────────────────
           if (currentMode === ADMIN_MODES.AGENDAR_MES) {
             const idx = parseInt(text) - 1;
@@ -935,28 +811,23 @@ async function startBot() {
             }
             const mesElegido = data.mesesDisponibles[idx];
             data.mesSeleccionado = mesElegido;
-
             // Aquí copiamos la lógica de semanas (es larga, pero igual que cliente)
             const ahora = new Date();
             const hoy = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate(), 0, 0, 0);
             const primerDiaMes = new Date(mesElegido.year, mesElegido.mes, 1);
             const ultimoDiaMes = new Date(mesElegido.year, mesElegido.mes + 1, 0);
-
             let primerLunes = new Date(primerDiaMes);
             while (primerLunes.getDay() !== 0 && primerLunes <= ultimoDiaMes) {
               primerLunes.setDate(primerLunes.getDate() + 1);
             }
-
             const semanas = [];
             let diaActual = new Date(primerLunes);
             while (diaActual <= ultimoDiaMes) {
               const inicioSemana = new Date(diaActual);
               const finSemana = new Date(diaActual);
               finSemana.setDate(finSemana.getDate() + 6);
-
               const manana = new Date(hoy);
               manana.setDate(manana.getDate() + 1);
-
               if (finSemana >= manana) {
                 semanas.push({
                   indice: semanas.length,
