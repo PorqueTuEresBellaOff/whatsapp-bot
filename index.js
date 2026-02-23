@@ -472,7 +472,7 @@ async function startBot() {
 
   const sock = makeWASocket({
     auth: state,
-    printQRInTerminal: false,
+    printQRInTerminal: true,
     logger,
     syncFullHistory: false,           // opcional, ahorra datos
     shouldSyncHistoryMessage: () => false,
