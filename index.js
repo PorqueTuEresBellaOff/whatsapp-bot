@@ -7,7 +7,6 @@ import express from "express";
 import { Mutex } from 'async-mutex';
 import makeWASocket, {
   DisconnectReason,
-  AuthenticationState,
   BufferJSON
 } from "@whiskeysockets/baileys";
 
