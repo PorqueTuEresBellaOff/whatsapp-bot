@@ -65,7 +65,7 @@ export async function useTiDBAuthState(sessionId = 'whatsapp_bot_principal') {
   // Si NO existen creds en DB → es primera vez → Baileys necesita un objeto vacío para empezar
   if (!creds) {
     console.log('[TiDB AUTH] No se encontraron creds → asumiendo primera conexión (QR vendrá)');
-    creds = {};   // ← objeto vacío → Baileys lo completa y luego lo guarda vía saveCreds
+    creds = null;   // ← objeto vacío → Baileys lo completa y luego lo guarda vía saveCreds
   }
 
   const state = {
