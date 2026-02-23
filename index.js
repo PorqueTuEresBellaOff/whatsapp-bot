@@ -406,7 +406,7 @@ async function obtenerTodasCitasFuturas() {
   }
 }
 
-const BUCKET_NAME = "gs://porquetueresbellaoficial.firebasestorage.app/baileys-sessions"; // tu bucket
+const BUCKET_NAME = "porquetueresbellaoficial.firebasestorage.app/baileys-sessions"; // tu bucket
 const ZIP_FILE_PATH_IN_STORAGE = "baileys-auth-folder.zip";
 
 const bucket = getStorage().bucket(BUCKET_NAME);
