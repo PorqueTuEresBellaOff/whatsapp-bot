@@ -480,13 +480,48 @@ async function startBot() {
 
   sock.ev.on("creds.update", saveCreds);
 
-  sock.ev.on("connection.update", ({ connection, qr }) => {
+  sock.ev.on("connection.update", async (update) => {
+    const { connection, lastDisconnect, qr, isNewLogin } = update;
+
     if (qr) {
-      console.log("🔗 Escanea este QR con tu WhatsApp:");
-      qrcode.generate(qr, { small: true });
+      console.clear(); // opcional: limpia la terminal para que se vea mejor
+      console.log("\n".repeat(3));
+      console.log("=".repeat(50));
+      console.log("       ESCANEA ESTE CÓDIGO QR");
+      console.log("=".repeat(50));
+      console.log("\n");
+
+      // Imprime el QR en terminal (grande y legible)
+      qrcode.generate(qr, { small: false });   // small: false → más grande
+
+      console.log("\nEscanea con WhatsApp → Ajustes → Dispositivos vinculados → Vincular dispositivo");
+      console.log("Tienes ~20–30 segundos antes de que expire\n");
     }
+
+    if (connection === "close") {
+      const shouldReconnect =
+        lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+
+      console.log("❌ Conexión cerrada →", {
+        reason: lastDisconnect?.error?.output?.statusCode,
+        description: DisconnectReason[lastDisconnect?.error?.output?.statusCode || 0] || "desconocido",
+        shouldReconnect
+      });
+
+      if (shouldReconnect) {
+        console.log("🔄 Reconectando en 4–6 segundos...");
+        setTimeout(startBot, 4000 + Math.random() * 2000);
+      } else {
+        console.log("🚫 Sesión cerrada (logged out). Borra auth y vuelve a vincular.");
+        // Opcional: borrar el archivo de auth para forzar nuevo QR la próxima vez
+        // await bucket.file(AUTH_FILE_PATH).delete().catch(() => {});
+      }
+    }
+
     if (connection === "open") {
-      console.log("✅ Bot conectado exitosamente");
+      console.log("╔════════════════════════════════════╗");
+      console.log("║     ✅ BOT CONECTADO EXITOSAMENTE   ║");
+      console.log("╚════════════════════════════════════╝");
       limpiarCitasPasadas();
       reprogramarRecordatoriosPendientes(sock);
       programarLimpiezaDiaria();
