@@ -175,16 +175,16 @@ function programarRecordatorio(sock, numeroCompletoCliente, cita, clienteData) {
                         `💇‍♀️ *${cita.servicio}* con ${cita.empleado}\n` +
                         `🕐 ${fechaCita.toLocaleTimeString("es-CO", { hour: '2-digit', minute: '2-digit', hour12: true })}\n\n` +
                         `¡Por favor ven con tiempo! Te esperamos con cariño 💖 \n\n` +
-                        'Si deseas cancelarla puedes entrar a la seccion "Consultar cita" ezcribiendo "MENU" y luego "2" \n\n' +
-                        'Recuerda que estamos ubicados en la Carrera 19 # 70A - 31 edificio alexandra 301, Barrios Unidos, Chapinero centrar, Bogotá D.C.';
+                        'Si deseas cancelarla puedes entrar a la seccion "Consultar cita" escribiendo "MENU" y luego "2"\n\n' +
+                        'Recuerda que estamos ubicados en la Carrera 19 # 70A - 31 edificio alexandra 301, Barrios Unidos, Chapinero central, Bogotá D.C.';
       } else {
         mensajeCliente = `⏰ *Recordatorio de cita* (2 horas antes)\n\n` +
                         `💇‍♀️ *${cita.servicio}* con ${cita.empleado}\n` +
                         `📅 ${formatearFecha(fechaCita)}\n` +
                         `🕐 ${fechaCita.toLocaleTimeString("es-CO", { hour: '2-digit', minute: '2-digit', hour12: true })}\n\n` +
                         `¡Te esperamos! 💖 \n\n` +
-                        'Si deseas cancelarla puedes entrar a la seccion "Consultar cita" ezcribiendo "MENU" y luego "2" \n\n' + 
-                        'Recuerda que estamos ubicados en la Carrera 19 # 70A - 31 edificio alexandra 301, Barrios Unidos, Chapinero centrar, Bogotá D.C.';
+                        'Si deseas cancelarla puedes entrar a la seccion "Consultar cita" escribiendo "MENU" y luego "2" \n\n' + 
+                        'Recuerda que estamos ubicados en la Carrera 19 # 70A - 31 edificio alexandra 301, Barrios Unidos, Chapinero central, Bogotá D.C.';
       }
       await sock.sendMessage(numeroCompletoCliente, { text: mensajeCliente });
       // 2. Mensaje al GRUPO DE ADMINS
@@ -1511,7 +1511,7 @@ async function startBot() {
       if (!conv.estado) {
         conv.estado = "INICIO";
         await sock.sendMessage(from, { 
-          text: `¡Hola! 💖 Bienvenido/a a *Porque Tú Eres Bella* ✨\n\nSomos tu salón de belleza favorito. ¿En qué podemos ayudarte hoy?\n\n*Opciones disponibles:*\n1️⃣ Agendar cita\n2️⃣ Consultar cita existente\n3️⃣ Información de servicios\n\nEscribe el número de la opción (ej: 1) \n\n Recuerda que estamos ubicados en la Carrera 19 # 70A - 31 edificio alexandra 301, Barrios Unidos, Chapinero centrar, Bogotá D.C. \n\n Si tienes dudas para agendar la cita, puedes llamar a este mismo numero y un asesor humano lo hará por ti` 
+          text: `¡Hola! 💖 Bienvenido/a a *Porque Tú Eres Bella* ✨\n\nSomos tu salón de belleza favorito. ¿En qué podemos ayudarte hoy?\n\n*Opciones disponibles:*\n1️⃣ Agendar cita\n2️⃣ Consultar cita existente\n3️⃣ Información de servicios\n\nEscribe el número de la opción (ej: 1) \n\n Recuerda que estamos ubicados en la Carrera 19 # 70A - 31 edificio alexandra 301, Barrios Unidos, Chapinero central, Bogotá D.C. \n\n Si tienes dudas para agendar la cita, puedes llamar a este mismo numero y un asesor humano lo hará por ti` 
         });
         return;
       }
@@ -1531,7 +1531,7 @@ async function startBot() {
                 `Escribe el número de la opción (ej: 1)\n\n` +
                 `💡 *Comandos útiles:*\n` +
                 `• Escribe 'MENU' en cualquier momento para volver aquí\n` +
-                `• Escribe 'AYUDA' si necesitas asistencia \n\n Recuerda que estamos ubicados en la Carrera 19 # 70A - 31 edificio alexandra 301, Barrios Unidos, Chapinero centrar, Bogotá D.C. \n\n Si tienes dudas para agendar la cita, puedes llamar a este mismo numero y un asesor humano lo hará por ti` 
+                `• Escribe 'AYUDA' si necesitas asistencia \n\n Recuerda que estamos ubicados en la Carrera 19 # 70A - 31 edificio alexandra 301, Barrios Unidos, Chapinero central, Bogotá D.C. \n\n Si tienes dudas para agendar la cita, puedes llamar a este mismo numero y un asesor humano lo hará por ti` 
         });
         return;
       }
@@ -2352,7 +2352,7 @@ async function startBot() {
                   `💖 *¡Te esperamos con mucho cariño en Porque Tú Eres Bella!*\n\n` +
                   `Si necesitas cambiar o cancelar tu cita, escribe '2️⃣' en el menú principal para consultar.\n\n` +
                   `Escribe 'MENU' para volver al menú principal.\n\n` + 
-                  'Recuerda que estamos ubicados en la Carrera 19 # 70A - 31 edificio alexandra 301, Barrios Unidos, Chapinero centrar, Bogotá D.C.'
+                  'Recuerda que estamos ubicados en la Carrera 19 # 70A - 31 edificio alexandra 301, Barrios Unidos, Chapinero central, Bogotá D.C.'
           });
 
           if (conv.temp.esCambio) {
