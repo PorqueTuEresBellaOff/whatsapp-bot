@@ -454,8 +454,22 @@ async function startBot() {
     }
 
     if (connection === "close") {
-      const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
-      console.log("❌ Conexión cerrada.", shouldReconnect ? "Intentando reconectar..." : "Logout detectado.");
+      const statusCode = (lastDisconnect?.error)?.output?.statusCode;
+      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+      console.log(`❌ Conexión cerrada. Código: ${statusCode}.`, shouldReconnect ? "Intentando reconectar..." : "Logout detectado.");
+
+      // Sesión expirada, inválida o multi-dispositivo desincronizado → borrar auth y mostrar nuevo QR
+      const SESSION_INVALID_CODES = [401, 405, 411, 515];
+      if (SESSION_INVALID_CODES.includes(statusCode)) {
+        console.log("🗑️ Sesión inválida/expirada. Borrando auth para generar nuevo QR...");
+        try {
+          await fs.rm(AUTH_FOLDER, { recursive: true, force: true });
+        } catch (e) {
+          console.error("Error borrando auth:", e);
+        }
+        setTimeout(startBot, 3000);
+        return;
+      }
 
       if (shouldReconnect) {
         setTimeout(startBot, 5000);
