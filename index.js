@@ -8,7 +8,8 @@ import express from "express";
 import { Mutex } from 'async-mutex';
 import makeWASocket, {
   useMultiFileAuthState,
-  DisconnectReason
+  DisconnectReason,
+  fetchLatestBaileysVersion
 } from "@whiskeysockets/baileys";
 
 import qrcode from "qrcode-terminal";
@@ -44,6 +45,9 @@ import fs from 'fs/promises';
 import path from 'path';
 
 const AUTH_FOLDER = path.join(process.cwd(), 'baileys-auth');
+let reconnectAttempts = 0;
+let reconnectTimer = null;
+let isBootingBot = false;
 // ===============================
 // DATOS BASE
 // ===============================
@@ -410,6 +414,15 @@ async function obtenerTodasCitasFuturas() {
 // BOT
 // ===============================
 async function startBot() {
+  if (isBootingBot) {
+    return;
+  }
+  isBootingBot = true;
+
+  let sock;
+
+  try {
+
   // Crear carpeta local si no existe
   try {
     await fs.mkdir(AUTH_FOLDER, { recursive: true });
@@ -420,13 +433,35 @@ async function startBot() {
 
   const logger = pino({ level: 'silent' });
 
+  let version;
+  try {
+    const waVersion = await fetchLatestBaileysVersion();
+    version = waVersion.version;
+    console.log(`📡 Versión WA Web usada por Baileys: ${version.join('.')} (${waVersion.isLatest ? 'latest' : 'fallback'})`);
+  } catch (err) {
+    console.warn('No se pudo obtener la última versión de WA Web, usando versión por defecto de Baileys.');
+    console.warn(err?.message || err);
+  }
+
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
 
-  const sock = makeWASocket({
+  sock = makeWASocket({
     auth: state,
     printQRInTerminal: false,
-    logger
+    logger,
+    version
   });
+
+  const scheduleReconnect = (delayMs) => {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+    }
+    reconnectTimer = setTimeout(() => {
+      startBot().catch((err) => {
+        console.error('Error reiniciando bot:', err);
+      });
+    }, delayMs);
+  };
 
   sock.ev.on("creds.update", saveCreds);
 
@@ -437,6 +472,7 @@ async function startBot() {
     }
 
     if (connection === "open") {
+      reconnectAttempts = 0;
       console.log("✅ Bot conectado exitosamente");
       limpiarCitasPasadas();
       reprogramarRecordatoriosPendientes(sock);
@@ -458,8 +494,9 @@ async function startBot() {
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
       console.log(`❌ Conexión cerrada. Código: ${statusCode}.`, shouldReconnect ? "Intentando reconectar..." : "Logout detectado.");
 
-      // Sesión expirada, inválida o multi-dispositivo desincronizado → borrar auth y mostrar nuevo QR
-      const SESSION_INVALID_CODES = [401, 405, 411, 515];
+      // Solo borrar auth cuando realmente haya logout/sesión inválida.
+      // 405 suele ser cierre transitorio y borrar auth en ese caso genera un bucle infinito.
+      const SESSION_INVALID_CODES = [DisconnectReason.loggedOut, DisconnectReason.badSession];
       if (SESSION_INVALID_CODES.includes(statusCode)) {
         console.log("🗑️ Sesión inválida/expirada. Borrando auth para generar nuevo QR...");
         try {
@@ -467,17 +504,35 @@ async function startBot() {
         } catch (e) {
           console.error("Error borrando auth:", e);
         }
-        setTimeout(startBot, 3000);
+        reconnectAttempts = 0;
+        scheduleReconnect(3000);
         return;
       }
 
       if (shouldReconnect) {
-        setTimeout(startBot, 5000);
+        reconnectAttempts += 1;
+        const retryDelay = Math.min(60000, 4000 * reconnectAttempts);
+        scheduleReconnect(retryDelay);
       }
     }
   });
+  } catch (err) {
+    reconnectAttempts += 1;
+    const retryDelay = Math.min(60000, 4000 * reconnectAttempts);
+    console.error(`Error iniciando bot. Reintentando en ${retryDelay / 1000}s:`, err?.message || err);
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+    }
+    reconnectTimer = setTimeout(() => {
+      startBot().catch((retryErr) => {
+        console.error('Error reiniciando bot tras fallo de inicio:', retryErr);
+      });
+    }, retryDelay);
+  } finally {
+    isBootingBot = false;
+  }
 
-  sock.ev.on("messages.upsert", async ({ messages }) => {
+  sock?.ev.on("messages.upsert", async ({ messages }) => {
     const msg = messages[0];
     if (!msg.message || msg.key.fromMe) return;
 
